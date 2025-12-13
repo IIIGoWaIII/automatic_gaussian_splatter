@@ -1,0 +1,7 @@
+{
+    "files.readonlyInclude": {
+        "brush-app-x86_64-pc-windows-msvc/**": true,
+        "colmap-x64-windows-cuda/**": true,
+        "Helicon Focus 8/**": true
+    }
+}

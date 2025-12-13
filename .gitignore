@@ -1,0 +1,7 @@
+brush-app/
+colmap/
+processing_output/
+brush-app-x86_64-pc-windows-msvc/
+colmap-x64-windows-cuda/
+uploads/
+app.log

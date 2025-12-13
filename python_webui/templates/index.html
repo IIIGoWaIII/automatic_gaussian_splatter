@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gaussian Splat Automation</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>COLMAP + Brush Splatter</h1>
+            <p style="color: var(--text-secondary);">Automated Gaussian Splatting Pipeline</p>
+        </header>
+
+        <div class="glass-card">
+            <!-- Pipeline Settings -->
+            <div class="settings-grid">
+                <div class="settings-card">
+                    <div class="settings-card__header">
+                        <div>
+                            <h3>COLMAP Settings</h3>
+                            <p class="settings-subtitle">Camera tracking</p>
+                        </div>
+                    </div>
+                    <label class="field-label" for="colmapQuality">Quality preset</label>
+                    <select id="colmapQuality" class="field-control">
+                        <option value="low">Low (fast)</option>
+                        <option value="medium">Medium</option>
+                        <option value="high" selected>High (slow)</option>
+                    </select>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="colmapDense">
+                        <span>Enable dense reconstruction (slower, higher detail)</span>
+                    </label>
+                    <p class="settings-hint">Defaults loaded from your local COLMAP install.</p>
+                </div>
+
+                <div class="settings-card">
+                    <div class="settings-card__header">
+                        <div>
+                            <h3>Brush Settings</h3>
+                            <p class="settings-subtitle">Training</p>
+                        </div>
+                    </div>
+                    <label class="field-label" for="brushSteps">Total training steps</label>
+                    <input type="number" id="brushSteps" class="field-control" value="30000" min="1000" step="1000">
+
+                    <label class="field-label" for="brushShDegree">Spherical Harmonics degree (0-3)</label>
+                    <input type="number" id="brushShDegree" class="field-control" value="3" min="0" max="3" step="1">
+
+                    <label class="field-label" for="brushMaxSplats">Max Splat Count</label>
+                    <input type="number" id="brushMaxSplats" class="field-control" value="3000000" min="100000"
+                        step="100000">
+
+                    <label class="field-label" for="brushMaxResolution">Max Resolution (downscaling)</label>
+                    <input type="number" id="brushMaxResolution" class="field-control" value="8192" min="512"
+                        step="128">
+                    <p class="settings-hint" style="margin-top: 0.25rem; font-size: 0.75rem;">Max 8192 due to WebGPU
+                        limits. Lower values use less VRAM.</p>
+
+                    <label class="toggle-row">
+                        <input type="checkbox" id="brushViewer" checked>
+                        <span>Launch viewer while training</span>
+                    </label>
+                    <p class="settings-hint">These values are sent to Brush before processing starts.</p>
+                </div>
+            </div>
+
+            <!-- Continue Training Section -->
+            <details id="resumeSection" class="settings-card" style="margin-bottom: 1.5rem; padding: 0;">
+                <summary
+                    style="cursor: pointer; padding: 1.25rem; display: flex; align-items: center; gap: 0.75rem; font-weight: 600; font-size: 1rem;">
+                    <span style="font-size: 1.25rem;">🔄</span> Continue Training (Resume from Checkpoint)
+                </summary>
+                <div style="padding: 0 1.25rem 1.25rem 1.25rem; border-top: 1px solid rgba(255,255,255,0.1);">
+                    <p class="settings-hint" style="margin-top: 1rem;">Load a previous project and continue training
+                        from an exported PLY checkpoint.</p>
+
+                    <label class="field-label" for="resumeProject" style="margin-top: 1rem;">Select Project</label>
+                    <select id="resumeProject" class="field-control">
+                        <option value="">-- No projects available --</option>
+                    </select>
+
+                    <label class="toggle-row" style="margin-top: 1rem;">
+                        <input type="checkbox" id="resumeForceScratch">
+                        <span>Start from Scratch (Reset Training)</span>
+                    </label>
+                    <p class="settings-hint" style="margin-top: 0.25rem;">If checked, existing checkpoints are ignored
+                        and training starts from 0 using current Brush settings.</p>
+
+                    <label class="field-label" for="resumeCheckpoint" style="margin-top: 1rem;">Start from
+                        Checkpoint</label>
+                    <select id="resumeCheckpoint" class="field-control">
+                        <option value="">-- Select a project first --</option>
+                    </select>
+
+                    <label class="field-label" for="resumeTargetSteps" style="margin-top: 1rem;">Target Total
+                        Steps</label>
+                    <input type="number" id="resumeTargetSteps" class="field-control" value="35000" min="1000"
+                        step="1000">
+                    <p class="settings-hint">How many total steps to train to. Must be greater than the checkpoint
+                        iteration.</p>
+
+                    <div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;">
+                        <label class="toggle-row" style="flex: 1; min-width: 200px;">
+                            <input type="checkbox" id="resumeViewer" checked>
+                            <span>Launch viewer while training</span>
+                        </label>
+                    </div>
+
+                    <div style="margin-top: 1.5rem; display: flex; gap: 1rem; align-items: center;">
+                        <button id="refreshProjectsBtn" class="btn" style="background: rgba(255,255,255,0.1);">↻
+                            Refresh</button>
+                        <button id="resumeTrainingBtn" class="btn" style="flex: 1;">▶ Resume Training</button>
+                    </div>
+                </div>
+            </details>
+
+            <!-- Project Name Section -->
+            <div class="settings-card" style="margin-bottom: 1.5rem;">
+                <div class="settings-card__header">
+                    <div>
+                        <h3>Project Settings</h3>
+                        <p class="settings-subtitle">Output folder name</p>
+                    </div>
+                </div>
+                <label class="field-label" for="projectName">Project Name (optional)</label>
+                <input type="text" id="projectName" class="field-control" placeholder="e.g., my_garden_scene"
+                    pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores and hyphens allowed">
+                <p class="settings-hint">Leave empty to auto-generate. Use only letters, numbers, underscores or
+                    hyphens.</p>
+            </div>
+
+            <!-- Upload Section -->
+            <div id="dropZone" class="upload-area">
+                <div class="upload-icon">📁</div>
+                <h3>Drop Images or Video here</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 2rem;">or click to browse</p>
+                <input type="file" id="fileInput" hidden multiple
+                    accept="image/*,video/mp4,video/quicktime,video/x-msvideo,.mov,.mp4,.avi">
+                <button class="btn" onclick="document.getElementById('fileInput').click()">Select Files</button>
+            </div>
+
+            <!-- Video Settings (Hidden by default) -->
+            <div id="videoSettings" class="settings-panel"
+                style="display: none; padding: 1.5rem; background: rgba(255,255,255,0.05); border-radius: 8px; margin-bottom: 2rem; border: 1px solid rgba(255,255,255,0.1);">
+                <h3 style="margin-top: 0; margin-bottom: 1rem;">Video Extraction Settings</h3>
+
+                <div style="display: flex; gap: 2rem; margin-bottom: 1rem;">
+                    <label style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="radio" name="extractionMode" value="fps" checked>
+                        Fixed FPS
+                    </label>
+                    <label style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="radio" name="extractionMode" value="count">
+                        Total Frame Count
+                    </label>
+                </div>
+
+                <div style="display: flex; gap: 1rem; align-items: center;">
+                    <div style="flex-grow: 1;">
+                        <label id="valueLabel"
+                            style="display: block; margin-bottom: 0.5rem; font-size: 0.9em; color: var(--text-secondary);">Frames
+                            per Second</label>
+                        <input type="number" id="extractionValue" value="2" step="0.1" min="0.1"
+                            style="width: 100%; padding: 0.5rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: white;">
+                    </div>
+                    <div style="flex-grow: 1;">
+                        <label
+                            style="display: block; margin-bottom: 0.5rem; font-size: 0.9em; color: var(--text-secondary);">Estimated
+                            Output</label>
+                        <div id="estimatedFrames" style="padding: 0.5rem; color: var(--accent);">Calculating...</div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 1.5rem; text-align: right;">
+                    <button id="startUploadBtn" class="btn">Start Processing</button>
+                </div>
+            </div>
+
+            <!-- Pipeline Status Indicators -->
+            <div id="pipelineStatus" class="pipeline-status">
+                <div id="stepStacking" class="step" title="Preprocessing">1</div>
+                <div id="stepTracking" class="step" title="Camera Tracking">2</div>
+                <div id="stepTraining" class="step" title="Splat Training">3</div>
+            </div>
+
+            <!-- Console Output -->
+            <div id="consoleWindow" class="console-window">
+                <div id="consoleOutput"></div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/app.js?v=fixed_cache_bust_1"></script>
+</body>
+
+</html>

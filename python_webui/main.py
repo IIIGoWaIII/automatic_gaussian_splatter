@@ -1,0 +1,283 @@
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks, WebSocket, WebSocketDisconnect, Form
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from typing import List, Optional
+import shutil
+import uuid
+import json
+import asyncio
+from pathlib import Path
+from utils import logger, ensure_directory, get_project_root
+from pipeline_manager import PipelineManager
+
+import sys
+
+# Force ProactorEventLoop on Windows for subprocess support
+# This must be done before the event loop is created
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+app = FastAPI(title="Gaussian Splatter WebUI")
+
+# Paths
+BASE_DIR = get_project_root()
+UPLOAD_DIR = BASE_DIR / "uploads"
+OUTPUT_DIR = BASE_DIR / "processing_output"
+
+ensure_directory(UPLOAD_DIR)
+ensure_directory(OUTPUT_DIR)
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+# Pipeline Manager
+manager = PipelineManager(str(OUTPUT_DIR))
+
+# Store active websockets for logging
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                disconnected.append(connection)
+        
+        for conn in disconnected:
+            if conn in self.active_connections:
+                self.active_connections.remove(conn)
+    
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        if websocket in self.active_connections:
+            try:
+                await websocket.send_text(message)
+            except:
+                pass
+
+ws_manager = ConnectionManager()
+
+@app.get("/")
+async def get_index():
+    with open(BASE_DIR / "templates" / "index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
+
+@app.post("/upload")
+async def upload_dataset(
+    files: List[UploadFile] = File(...), 
+    extractionMode: str = Form("fps"),
+    extractionValue: str = Form("2"),
+    projectName: Optional[str] = Form(None),
+    colmapSettings: Optional[str] = Form(None),
+    brushSettings: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None
+):
+    try:
+        task_id = str(uuid.uuid4())
+        task_dir = UPLOAD_DIR / task_id
+        ensure_directory(task_dir)
+        
+        input_type = "images"
+        input_path = task_dir 
+        
+        # Check if single video file
+        if len(files) == 1 and files[0].filename.lower().endswith(('.mp4', '.mov', '.avi')):
+            input_type = "video"
+            input_path = task_dir / files[0].filename
+            with open(input_path, "wb") as buffer:
+                shutil.copyfileobj(files[0].file, buffer)
+        else:
+            # Assume images
+            input_type = "images"
+            images_dir = task_dir / "raw_images"
+            ensure_directory(images_dir)
+            input_path = images_dir
+            
+            for file in files:
+                if file.filename:
+                    file_path = images_dir / file.filename
+                    with open(file_path, "wb") as buffer:
+                        shutil.copyfileobj(file.file, buffer)
+            
+        logger.info(f"Files uploaded: {task_id} (Type: {input_type})")
+        
+        extraction_settings = {
+            "mode": extractionMode,
+            "value": extractionValue
+        }
+
+        # Optional pipeline settings (provided as JSON strings)
+        parsed_colmap = None
+        parsed_brush = None
+
+        try:
+            if colmapSettings:
+                parsed_colmap = json.loads(colmapSettings)
+        except Exception as e:
+            logger.error(f"Failed to parse colmap settings: {e}")
+
+        try:
+            if brushSettings:
+                parsed_brush = json.loads(brushSettings)
+        except Exception as e:
+            logger.error(f"Failed to parse brush settings: {e}")
+
+        # Start processing in background
+        background_tasks.add_task(
+            start_pipeline,
+            task_id,
+            input_type,
+            input_path,
+            extraction_settings,
+            parsed_colmap,
+            parsed_brush,
+            projectName
+        )
+        
+        return {"task_id": task_id, "status": "uploaded", "message": "File processing started"}
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        return {"error": str(e)}
+
+@app.get("/settings")
+async def get_settings():
+    """Expose default COLMAP and Brush settings to the UI."""
+    return {
+        "colmap": manager.get_default_colmap_settings(),
+        "brush": manager.get_default_brush_settings()
+    }
+
+@app.get("/list-outputs")
+async def list_outputs():
+    """List available output folders that can be used for resume training."""
+    try:
+        outputs = manager.get_available_outputs()
+        logger.info(f"List outputs called. Found {len(outputs)} projects: {[o['folder'] for o in outputs]}")
+        return {"outputs": outputs}
+    except Exception as e:
+        logger.error(f"Failed to list outputs: {e}")
+        return {"error": str(e), "outputs": []}
+
+@app.post("/resume")
+async def resume_training(
+    projectPath: str = Form(...),
+    startIter: Optional[int] = Form(0), # Optional now because scratch might not send it or it's irrelevant
+    totalSteps: int = Form(...),
+    brushSettings: Optional[str] = Form(None),
+    forceScratch: bool = Form(False),
+    background_tasks: BackgroundTasks = None
+):
+    """Resume training from an existing project folder or start from scratch."""
+    try:
+        # Parse brush settings if provided
+        parsed_brush = None
+        if brushSettings:
+            try:
+                parsed_brush = json.loads(brushSettings)
+            except Exception as e:
+                logger.error(f"Failed to parse brush settings: {e}")
+        
+        # Ensure total_steps is set
+        if parsed_brush is None:
+            parsed_brush = {}
+        parsed_brush["total_steps"] = totalSteps
+        
+        msg = f"Resuming training from iteration {startIter}"
+        if forceScratch:
+            msg = "Starting training from scratch using existing COLMAP data"
+        
+        # Start resume training in background
+        background_tasks.add_task(
+            start_resume_training,
+            projectPath,
+            startIter,
+            parsed_brush,
+            forceScratch
+        )
+        
+        return {"status": "started", "message": msg}
+    except Exception as e:
+        logger.error(f"Training request failed: {e}")
+        return {"error": str(e)}
+
+async def start_resume_training(project_path: str, start_iter: int, brush_settings: dict, force_scratch: bool):
+    """Background task to run resume training."""
+    async def log_callback(msg: str):
+        try:
+            await ws_manager.broadcast(json.dumps({
+                "type": "log",
+                "task_id": "resume",
+                "message": msg
+            }))
+        except Exception as e:
+            logger.error(f"Failed to broadcast log: {e}")
+
+    try:
+        await manager.resume_training(project_path, start_iter, brush_settings, log_callback, force_scratch)
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": "resume",
+            "status": "completed"
+        }))
+    except Exception as e:
+        logger.exception(f"Resume training failed")
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": "resume",
+            "status": "failed"
+        }))
+
+async def start_pipeline(task_id: str, input_type: str, input_path: Path, extraction_settings: dict, colmap_settings: Optional[dict] = None, brush_settings: Optional[dict] = None, project_name: Optional[str] = None):
+    async def log_callback(msg: str):
+        try:
+            await ws_manager.broadcast(json.dumps({
+                "type": "log",
+                "task_id": task_id,
+                "message": msg
+            }))
+        except Exception as e:
+            logger.error(f"Failed to broadcast log: {e}")
+
+    try:
+        await manager.process_dataset(
+            task_id,
+            input_type,
+            input_path,
+            extraction_settings,
+            log_callback,
+            colmap_settings,
+            brush_settings,
+            project_name
+        )
+        await log_callback("Pipeline finished successfully") # Explicit log
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "completed"
+        }))
+    except Exception as e:
+        logger.exception(f"Pipeline failed for task {task_id}")
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "failed"
+        }))
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle incoming messages if needed
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
