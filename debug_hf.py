@@ -2,10 +2,13 @@ import asyncio
 import os
 import shutil
 
+from pathlib import Path
+
 async def run():
-    command = r"d:\software\gaussian_splatter\Helicon Focus 8\HeliconFocus.exe"
-    output_image_path = r"d:\software\gaussian_splatter\test_debug_output.tif"
-    stack_dir = r"d:\software\gaussian_splatter\test_debug_unpack\view_001"
+    repo_root = Path(__file__).parent.resolve()
+    command = str(repo_root / "Helicon Focus 8" / "HeliconFocus.exe")
+    output_image_path = str(repo_root / "test_debug_output.tif")
+    stack_dir = str(repo_root / "test_debug_unpack" / "view_001")
     
     args = [
         "-silent",

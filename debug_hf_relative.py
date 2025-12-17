@@ -2,10 +2,13 @@ import asyncio
 import os
 import shutil
 
+from pathlib import Path
+
 async def run():
-    command = r"d:\software\gaussian_splatter\Helicon Focus 8\HeliconFocus.exe"
+    repo_root = Path(__file__).parent.resolve()
+    command = str(repo_root / "Helicon Focus 8" / "HeliconFocus.exe")
     # Use relative path by changing cwd
-    base_dir = r"D:\software\gaussian_splatter\python_webui\processing_output\aef8a3c3-88fe-41df-9be7-ecf834e8e08c"
+    base_dir = repo_root / "python_webui" / "processing_output" / "aef8a3c3-88fe-41df-9be7-ecf834e8e08c"
     os.chdir(base_dir)
     
     output_image_rel = r"images\view_001.tif"

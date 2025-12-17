@@ -2,11 +2,14 @@ import asyncio
 import os
 import shutil
 
+from pathlib import Path
+
 async def run():
-    command = r"d:\software\gaussian_splatter\Helicon Focus 8\HeliconFocus.exe"
+    repo_root = Path(__file__).parent.resolve()
+    command = str(repo_root / "Helicon Focus 8" / "HeliconFocus.exe")
     # Exact path from log
-    output_image_path = r"D:\software\gaussian_splatter\python_webui\processing_output\aef8a3c3-88fe-41df-9be7-ecf834e8e08c\images\view_001.tif"
-    stack_dir = r"D:\software\gaussian_splatter\python_webui\processing_output\aef8a3c3-88fe-41df-9be7-ecf834e8e08c\input_source\view_001"
+    output_image_path = str(repo_root / "python_webui" / "processing_output" / "aef8a3c3-88fe-41df-9be7-ecf834e8e08c" / "images" / "view_001.tif")
+    stack_dir = str(repo_root / "python_webui" / "processing_output" / "aef8a3c3-88fe-41df-9be7-ecf834e8e08c" / "input_source" / "view_001")
     
     args = [
         "-silent",

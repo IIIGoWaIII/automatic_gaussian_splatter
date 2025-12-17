@@ -3,4 +3,5 @@ uvicorn
 python-multipart
 aiofiles
 websockets
+numpy
 opencv-python

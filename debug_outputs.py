@@ -8,7 +8,8 @@ sys.path.append(os.path.join(os.getcwd(), 'python_webui'))
 from pipeline_manager import PipelineManager
 
 def debug_outputs():
-    base_dir = Path(r"d:\software\gaussian_splatter\python_webui\processing_output")
+    repo_root = Path(__file__).parent.resolve()
+    base_dir = repo_root / "python_webui" / "processing_output"
     print(f"Checking base dir: {base_dir}")
     print(f"Exists: {base_dir.exists()}")
     

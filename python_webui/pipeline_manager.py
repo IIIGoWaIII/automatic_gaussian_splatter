@@ -4,18 +4,21 @@ from pathlib import Path
 from typing import List, Callable, Optional
 import shutil
 import re
-from utils import logger, ensure_directory
+from utils import logger, ensure_directory, get_project_root
 
 import cv2
+import numpy as np
 
-# Hardcoded paths based on user environment
-COLMAP_BAT_PATH = r"d:\software\gaussian_splatter\colmap-x64-windows-cuda\COLMAP.bat"
-BRUSH_PATH = r"d:\software\gaussian_splatter\brush-app-x86_64-pc-windows-msvc\brush_app.exe"
+# Dynamic paths based on project root
+REPO_ROOT = get_project_root().parent
+COLMAP_BAT_PATH = str(REPO_ROOT / "colmap-x64-windows-cuda" / "COLMAP.bat")
+BRUSH_PATH = str(REPO_ROOT / "brush-app-x86_64-pc-windows-msvc" / "brush_app.exe")
 
 DEFAULT_COLMAP_SETTINGS = {
     "sparse": 1,      # Build sparse model
     "dense": 0,       # Skip dense reconstruction for speed by default
-    "quality": "high"
+    "quality": "high",
+    "remove_duplicates": False, # Remove duplicate images
 }
 
 DEFAULT_BRUSH_SETTINGS = {
@@ -23,7 +26,8 @@ DEFAULT_BRUSH_SETTINGS = {
     "with_viewer": True,
     "sh_degree": 3,           # Spherical Harmonics degree (0-3)
     "max_splats": 3000000,    # Max 3 million splats
-    "max_resolution": 8192    # Max resolution (limited by WebGPU dispatch group max of 65535)
+    "max_resolution": 8192,   # Max resolution (limited by WebGPU dispatch group max of 65535)
+    "shutdown_after_training": False # Shutdown PC after training
 }
 
 class PipelineManager:
@@ -146,6 +150,8 @@ class PipelineManager:
         
         ensure_directory(model_dir)
 
+        shutdown_needed = brush_settings.get("shutdown_after_training", False)
+
         if force_scratch:
             # START FROM SCRATCH logic
             init_ply_path = task_dir / "init.ply"
@@ -163,6 +169,10 @@ class PipelineManager:
                 await self.run_command(BRUSH_PATH, brush_args, log_callback)
                 
                 await log_callback("--- Training Completed Successfully ---\n")
+                
+                if shutdown_needed:
+                    await self.trigger_shutdown(log_callback)
+
             except Exception as e:
                 logger.error(f"Training failed: {e}")
                 await log_callback(f"\nCRITICAL ERROR: {str(e)}\n")
@@ -193,6 +203,9 @@ class PipelineManager:
                 await self.run_command(BRUSH_PATH, brush_args, log_callback)
                 
                 await log_callback("--- Resume Training Completed Successfully ---\n")
+
+                if shutdown_needed:
+                    await self.trigger_shutdown(log_callback)
             except Exception as e:
                 logger.error(f"Resume training failed: {e}")
                 await log_callback(f"\nCRITICAL ERROR: {str(e)}\n")
@@ -247,6 +260,81 @@ class PipelineManager:
         logger.info("Command finished successfully")
         if log_callback:
             await log_callback("Command finished successfully\n")
+
+    async def trigger_shutdown(self, log_callback: Callable[[str], None]):
+        """Triggers system shutdown after a delay."""
+        logger.warning("Initiating system shutdown sequence...")
+        await log_callback("\n[WARNING] System will shut down in 60 seconds...\n")
+        
+        # Windows shutdown command
+        cmd = "shutdown /s /t 60"
+        
+        try:
+            # We don't await this because we want to return and finish the request, 
+            # letting the OS handle the shutdown timer.
+            process = await asyncio.create_subprocess_shell(cmd)
+            await log_callback("Shutdown command sent. Run 'shutdown /a' to abort.\n")
+        except Exception as e:
+            logger.error(f"Failed to trigger shutdown: {e}")
+            await log_callback(f"Failed to trigger shutdown: {e}\n")
+
+    def calculate_dhash(self, image, hash_size=8):
+        """
+        Calculate difference hash (dHash) for an image.
+        """
+        try:
+            # Resize
+            resized = cv2.resize(image, (hash_size + 1, hash_size))
+            # Convert to grayscale
+            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+            # Compare adjacent pixels
+            diff = gray[:, 1:] > gray[:, :-1]
+            # Convert to integer
+            return sum([2 ** i for (i, v) in enumerate(diff.flatten()) if v])
+        except Exception as e:
+            logger.error(f"dHash failed: {e}")
+            return 0
+
+    def remove_duplicates(self, images_dir: Path, log_callback: Callable[[str], None]) -> int:
+        """
+        Find and remove duplicate images using dHash.
+        Returns number of removed images.
+        """
+        image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+        hashes = {}
+        duplicates = []
+        
+        files = sorted([f for f in images_dir.iterdir() if f.suffix.lower() in image_extensions])
+        
+        count = 0
+        total = len(files)
+        
+        for i, file_path in enumerate(files):
+            try:
+                img = cv2.imread(str(file_path))
+                if img is None:
+                    continue
+                
+                h = self.calculate_dhash(img)
+                
+                if h in hashes:
+                    duplicates.append(file_path)
+                else:
+                    hashes[h] = file_path
+            except Exception as e:
+                logger.error(f"Error checking duplicate for {file_path}: {e}")
+        
+        # Remove duplicates
+        removed_count = 0
+        for dup in duplicates:
+            try:
+                dup.unlink()
+                removed_count += 1
+                logger.info(f"Removed duplicate image: {dup.name}")
+            except Exception as e:
+                logger.error(f"Failed to delete duplicate {dup.name}: {e}")
+                
+        return removed_count
 
     def extract_frames(self, video_path: Path, output_dir: Path, settings: dict, log_callback: Callable[[str], None]):
         """Extracts frames from video based on settings."""
@@ -424,6 +512,16 @@ class PipelineManager:
                     await log_callback(f"Copied {copied_count}/{total_files} images ({progress_pct}%)...\n")
                 
                 await log_callback(f"Prepared {copied_count} images for COLMAP.\n")
+
+            # 1.5 Duplicate Removal (if enabled)
+            if colmap_cfg.get("remove_duplicates", False):
+                await log_callback("Checking for duplicate images...\n")
+                loop = asyncio.get_running_loop()
+                removed = await loop.run_in_executor(None, self.remove_duplicates, images_dir, log_callback)
+                if removed > 0:
+                    await log_callback(f"Removed {removed} duplicate images.\n")
+                else:
+                    await log_callback("No duplicates found.\n")
 
             # 2. COLMAP
             await log_callback("--- Step 2: Running COLMAP (Tracking) ---\n")

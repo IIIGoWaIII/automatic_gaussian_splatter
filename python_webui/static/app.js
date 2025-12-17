@@ -10,8 +10,10 @@ const estimatedFramesDiv = document.getElementById('estimatedFrames');
 const startUploadBtn = document.getElementById('startUploadBtn');
 const colmapQuality = document.getElementById('colmapQuality');
 const colmapDense = document.getElementById('colmapDense');
+const colmapRemoveDuplicates = document.getElementById('colmapRemoveDuplicates');
 const brushSteps = document.getElementById('brushSteps');
 const brushViewer = document.getElementById('brushViewer');
+const brushShutdown = document.getElementById('brushShutdown');
 const brushShDegree = document.getElementById('brushShDegree');
 const brushMaxSplats = document.getElementById('brushMaxSplats');
 const brushMaxResolution = document.getElementById('brushMaxResolution');
@@ -25,6 +27,16 @@ const resumeViewer = document.getElementById('resumeViewer');
 const resumeTrainingBtn = document.getElementById('resumeTrainingBtn');
 const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
 const resumeForceScratch = document.getElementById('resumeForceScratch'); // New Checkbox
+const resumeShutdown = document.getElementById('resumeShutdown');
+
+// Update Modal Elements
+const updateModal = document.getElementById('updateModal');
+const updateList = document.getElementById('updateList');
+const updateCancelBtn = document.getElementById('updateCancelBtn');
+const updateConfirmBtn = document.getElementById('updateConfirmBtn');
+
+// Store available updates
+let pendingUpdates = [];
 
 // Store available projects data
 let availableProjects = [];
@@ -48,10 +60,12 @@ async function loadSettings() {
         if (data?.colmap) {
             if (data.colmap.quality) colmapQuality.value = data.colmap.quality;
             colmapDense.checked = Boolean(data.colmap.dense);
+            colmapRemoveDuplicates.checked = Boolean(data.colmap.remove_duplicates);
         }
         if (data?.brush) {
             if (data.brush.total_steps) brushSteps.value = data.brush.total_steps;
             brushViewer.checked = Boolean(data.brush.with_viewer);
+            brushShutdown.checked = Boolean(data.brush.shutdown_after_training);
             if (data.brush.sh_degree !== undefined) brushShDegree.value = data.brush.sh_degree;
             if (data.brush.max_splats) brushMaxSplats.value = data.brush.max_splats;
             if (data.brush.max_resolution) brushMaxResolution.value = data.brush.max_resolution;
@@ -92,6 +106,104 @@ async function loadProjects() {
     }
 }
 loadProjects();
+
+// Check for updates on page load
+async function checkForUpdates() {
+    try {
+        const res = await fetch('/check-updates');
+        if (!res.ok) throw new Error('Failed to check updates');
+        const data = await res.json();
+
+        if (data.updates_available && data.updates.length > 0) {
+            pendingUpdates = data.updates;
+            showUpdateModal(data.updates);
+        }
+    } catch (err) {
+        console.warn('Unable to check for updates', err);
+    }
+}
+
+function showUpdateModal(updates) {
+    // Clear previous content
+    updateList.innerHTML = '';
+
+    // Populate update list
+    updates.forEach(update => {
+        const item = document.createElement('div');
+        item.className = 'update-item';
+        item.innerHTML = `
+            <span class="update-item-name">${update.name}</span>
+            <span class="update-item-versions">
+                <span class="current">${update.current}</span>
+                <span class="arrow">→</span>
+                <span class="latest">${update.latest}</span>
+            </span>
+        `;
+        updateList.appendChild(item);
+    });
+
+    // Show modal
+    updateModal.style.display = 'flex';
+}
+
+function hideUpdateModal() {
+    updateModal.style.display = 'none';
+}
+
+// Update modal button handlers
+updateCancelBtn.addEventListener('click', hideUpdateModal);
+
+updateConfirmBtn.addEventListener('click', async () => {
+    if (pendingUpdates.length === 0) return;
+
+    // Disable buttons and show progress
+    updateConfirmBtn.disabled = true;
+    updateConfirmBtn.textContent = 'Updating...';
+    updateCancelBtn.style.display = 'none';
+
+    // Replace update list with progress indicator
+    updateList.innerHTML = `
+        <div class="update-progress">
+            <span class="spinner"></span>
+            Installing updates... Check console for progress.
+        </div>
+    `;
+
+    // Show console for progress logs
+    statusDiv.style.display = 'flex';
+    consoleWindow.style.display = 'block';
+    consoleOutput.innerHTML = '';
+
+    try {
+        const formData = new FormData();
+        formData.append('updates', JSON.stringify(pendingUpdates));
+
+        const response = await fetch('/install-updates', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) throw new Error('Update request failed');
+
+        const result = await response.json();
+        console.log('Update started:', result);
+
+        // Modal will be closed when we receive completion status via WebSocket
+    } catch (err) {
+        console.error('Update failed:', err);
+        updateList.innerHTML = `
+            <div class="update-progress" style="color: var(--error);">
+                Update failed. Please try again later.
+            </div>
+        `;
+        updateConfirmBtn.textContent = 'Update';
+        updateConfirmBtn.disabled = false;
+        updateCancelBtn.style.display = 'inline-block';
+    }
+});
+
+// Check for updates after a short delay to let page load
+setTimeout(checkForUpdates, 1000);
 
 // Handle Force Scratch Checkbox
 resumeForceScratch.addEventListener('change', () => {
@@ -190,6 +302,7 @@ resumeTrainingBtn.addEventListener('click', async () => {
 
     const brushSettings = {
         with_viewer: resumeViewer.checked,
+        shutdown_after_training: resumeShutdown.checked,
         sh_degree: parseInt(brushShDegree.value, 10),
         max_splats: parseInt(brushMaxSplats.value, 10),
         max_resolution: parseInt(brushMaxResolution.value, 10)
@@ -233,6 +346,22 @@ ws.onmessage = (event) => {
     }
 
     if (data.type === 'status') {
+        // Handle update completion
+        if (data.task_id === 'update') {
+            if (data.status === 'completed' || data.status === 'partial') {
+                hideUpdateModal();
+                pendingUpdates = [];
+                const line = document.createElement('div');
+                line.className = 'console-line';
+                line.style.color = data.status === 'completed' ? 'var(--success)' : 'var(--error)';
+                line.textContent = data.status === 'completed'
+                    ? 'Updates installed successfully! You may need to restart the app.'
+                    : 'Some updates failed. Check logs above.';
+                consoleOutput.appendChild(line);
+            }
+            return;
+        }
+
         if (data.status === 'completed') {
             const line = document.createElement('div');
             line.className = 'console-line';
@@ -379,12 +508,14 @@ async function startUpload() {
     const colmapSettings = {
         quality: colmapQuality.value,
         dense: colmapDense.checked,
+        remove_duplicates: colmapRemoveDuplicates.checked,
         sparse: 1
     };
 
     const brushSettings = {
         total_steps: parseInt(brushSteps.value, 10),
         with_viewer: brushViewer.checked,
+        shutdown_after_training: brushShutdown.checked,
         sh_degree: parseInt(brushShDegree.value, 10),
         max_splats: parseInt(brushMaxSplats.value, 10),
         max_resolution: parseInt(brushMaxResolution.value, 10)

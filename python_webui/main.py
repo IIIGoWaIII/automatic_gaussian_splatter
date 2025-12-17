@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 from utils import logger, ensure_directory, get_project_root
 from pipeline_manager import PipelineManager
+from update_manager import get_update_manager
 
 import sys
 
@@ -270,6 +271,89 @@ async def start_pipeline(task_id: str, input_type: str, input_path: Path, extrac
             "type": "status",
             "task_id": task_id,
             "status": "failed"
+        }))
+
+@app.get("/check-updates")
+async def check_updates():
+    """Check for available updates from GitHub."""
+    try:
+        update_manager = get_update_manager()
+        result = update_manager.check_for_updates()
+        return result
+    except Exception as e:
+        logger.error(f"Failed to check updates: {e}")
+        return {"updates_available": False, "updates": [], "error": str(e)}
+
+@app.post("/install-updates")
+async def install_updates(
+    updates: str = Form(...),
+    background_tasks: BackgroundTasks = None
+):
+    """Install selected updates."""
+    try:
+        updates_list = json.loads(updates)
+        
+        # Start update installation in background
+        background_tasks.add_task(
+            run_update_installation,
+            updates_list
+        )
+        
+        return {"status": "started", "message": "Update installation started"}
+    except Exception as e:
+        logger.error(f"Failed to start update installation: {e}")
+        return {"error": str(e)}
+
+async def run_update_installation(updates_list: list):
+    """Background task to install updates."""
+    update_manager = get_update_manager()
+    
+    async def log_callback(msg: str):
+        try:
+            await ws_manager.broadcast(json.dumps({
+                "type": "log",
+                "task_id": "update",
+                "message": msg
+            }))
+        except Exception as e:
+            logger.error(f"Failed to broadcast update log: {e}")
+    
+    all_success = True
+    for update in updates_list:
+        app_key = update.get("key")
+        download_url = update.get("download_url", "")
+        latest_version = update.get("latest", "")
+        
+        await log_callback(f"Installing update for {update.get('name', app_key)}...")
+        
+        # Run in executor since it's blocking
+        import asyncio
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            None,
+            lambda: update_manager.install_update(
+                app_key,
+                download_url,
+                latest_version,
+                lambda msg: asyncio.run_coroutine_threadsafe(log_callback(msg), loop)
+            )
+        )
+        
+        if not success:
+            all_success = False
+            await log_callback(f"Failed to update {update.get('name', app_key)}")
+    
+    if all_success:
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": "update",
+            "status": "completed"
+        }))
+    else:
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": "update",
+            "status": "partial"
         }))
 
 @app.websocket("/ws")

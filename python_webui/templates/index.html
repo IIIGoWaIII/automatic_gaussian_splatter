@@ -14,6 +14,24 @@
 </head>
 
 <body>
+    <!-- Update Modal -->
+    <div id="updateModal" class="update-modal-overlay" style="display: none;">
+        <div class="update-modal">
+            <div class="update-modal-header">
+                <span class="update-icon">🔄</span>
+                <h2>Updates Available</h2>
+            </div>
+            <p class="update-subtitle">New versions are available for the following components:</p>
+            <div id="updateList" class="update-list">
+                <!-- Update items will be inserted here -->
+            </div>
+            <div class="update-modal-buttons">
+                <button id="updateCancelBtn" class="btn btn-cancel">Cancel</button>
+                <button id="updateConfirmBtn" class="btn btn-update">Update</button>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>COLMAP + Brush Splatter</h1>
@@ -39,6 +57,10 @@
                     <label class="toggle-row">
                         <input type="checkbox" id="colmapDense">
                         <span>Enable dense reconstruction (slower, higher detail)</span>
+                    </label>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="colmapRemoveDuplicates">
+                        <span>Remove duplicate pictures (dHash)</span>
                     </label>
                     <p class="settings-hint">Defaults loaded from your local COLMAP install.</p>
                 </div>
@@ -69,6 +91,10 @@
                     <label class="toggle-row">
                         <input type="checkbox" id="brushViewer" checked>
                         <span>Launch viewer while training</span>
+                    </label>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="brushShutdown">
+                        <span style="color: var(--accent);">Turn off PC when finished</span>
                     </label>
                     <p class="settings-hint">These values are sent to Brush before processing starts.</p>
                 </div>
@@ -113,6 +139,10 @@
                         <label class="toggle-row" style="flex: 1; min-width: 200px;">
                             <input type="checkbox" id="resumeViewer" checked>
                             <span>Launch viewer while training</span>
+                        </label>
+                        <label class="toggle-row" style="flex: 1; min-width: 200px;">
+                            <input type="checkbox" id="resumeShutdown">
+                            <span style="color: var(--accent);">Turn off PC when finished</span>
                         </label>
                     </div>
 
