@@ -3,5 +3,7 @@ colmap/
 processing_output/
 brush-app-x86_64-pc-windows-msvc/
 colmap-x64-windows-cuda/
+colmap-x64-windows-cuda_backup/
 uploads/
 app.log
+__pycache__

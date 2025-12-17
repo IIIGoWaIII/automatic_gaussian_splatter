@@ -254,10 +254,43 @@ class UpdateManager:
             logger.error(f"Download failed: {e}")
             return False
     
+    def _safe_rmtree(self, path: Path, retries: int = 3, delay: float = 1.0) -> bool:
+        """Safely remove a directory tree with retries for locked files."""
+        import time
+        import gc
+        
+        for attempt in range(retries):
+            try:
+                # Force garbage collection to release any Python references
+                gc.collect()
+                
+                if path.exists():
+                    shutil.rmtree(str(path), ignore_errors=False)
+                return True
+            except PermissionError as e:
+                if attempt < retries - 1:
+                    logger.warning(f"Retry {attempt + 1}/{retries} - File locked: {e}")
+                    time.sleep(delay)
+                else:
+                    # On final failure, try ignore_errors mode
+                    logger.warning(f"Could not fully remove {path}, some files may be locked")
+                    try:
+                        shutil.rmtree(str(path), ignore_errors=True)
+                    except:
+                        pass
+                    return False
+            except Exception as e:
+                logger.error(f"Error removing {path}: {e}")
+                return False
+        return True
+    
     def _extract_and_replace(self, zip_path: Path, target_folder: str) -> bool:
         """Extract zip and replace existing folder."""
+        import time
+        
         target_path = self.project_root / target_folder
         backup_path = self.project_root / f"{target_folder}_backup"
+        old_backup_path = self.project_root / f"{target_folder}_old"
         
         try:
             # Create temp extraction directory
@@ -275,25 +308,39 @@ class UpdateManager:
                 else:
                     source_path = temp_path
                 
-                # Backup existing folder
+                # Clean up any old backup first
+                if old_backup_path.exists():
+                    self._safe_rmtree(old_backup_path)
+                
+                # If there's a leftover backup from a failed previous attempt, move it
+                if backup_path.exists():
+                    try:
+                        shutil.move(str(backup_path), str(old_backup_path))
+                    except:
+                        self._safe_rmtree(backup_path)
+                
+                # Backup existing folder by renaming (faster than copy)
                 if target_path.exists():
-                    if backup_path.exists():
-                        shutil.rmtree(backup_path)
                     shutil.move(str(target_path), str(backup_path))
                 
-                # Move new folder
+                # Move new folder into place
                 shutil.copytree(str(source_path), str(target_path))
                 
-                # Remove backup on success
+                # Try to remove backup in background - don't fail if it's locked
+                # The backup will be cleaned up on next update or can be manually deleted
                 if backup_path.exists():
-                    shutil.rmtree(backup_path)
+                    if not self._safe_rmtree(backup_path, retries=2, delay=0.5):
+                        logger.info(f"Note: Old backup at {backup_path} could not be removed (files in use). It will be cleaned up later.")
                 
             return True
         except Exception as e:
             logger.error(f"Extract and replace failed: {e}")
             # Try to restore backup
             if backup_path.exists() and not target_path.exists():
-                shutil.move(str(backup_path), str(target_path))
+                try:
+                    shutil.move(str(backup_path), str(target_path))
+                except Exception as restore_err:
+                    logger.error(f"Failed to restore backup: {restore_err}")
             return False
     
     def install_update(self, app_key: str, download_url: str, latest_version: str, 

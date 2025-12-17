@@ -28,6 +28,16 @@ OUTPUT_DIR = BASE_DIR / "processing_output"
 ensure_directory(UPLOAD_DIR)
 ensure_directory(OUTPUT_DIR)
 
+# Cleanup backup folders on startup
+# The backup folder is expected to be in the project root, which is one level up from python_webui
+backup_dir = BASE_DIR.parent / "colmap-x64-windows-cuda_backup"
+if backup_dir.exists() and backup_dir.is_dir():
+    try:
+        shutil.rmtree(backup_dir)
+        logger.info(f"Removed backup directory: {backup_dir}")
+    except Exception as e:
+        logger.error(f"Failed to remove backup directory {backup_dir}: {e}")
+
 # Mount static files
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 

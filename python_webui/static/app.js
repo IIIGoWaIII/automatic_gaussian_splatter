@@ -127,20 +127,55 @@ function showUpdateModal(updates) {
     // Clear previous content
     updateList.innerHTML = '';
 
-    // Populate update list
-    updates.forEach(update => {
-        const item = document.createElement('div');
-        item.className = 'update-item';
-        item.innerHTML = `
-            <span class="update-item-name">${update.name}</span>
-            <span class="update-item-versions">
-                <span class="current">${update.current}</span>
-                <span class="arrow">→</span>
-                <span class="latest">${update.latest}</span>
-            </span>
-        `;
-        updateList.appendChild(item);
-    });
+    // Separate updates into categories
+    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush');
+    const appUpdates = updates.filter(u => u.key === 'app');
+
+    // Add section header for tools if there are tool updates
+    if (toolUpdates.length > 0) {
+        const toolHeader = document.createElement('div');
+        toolHeader.className = 'update-section-header';
+        toolHeader.textContent = 'Tools (COLMAP & Brush)';
+        updateList.appendChild(toolHeader);
+
+        toolUpdates.forEach(update => {
+            const item = document.createElement('label');
+            item.className = 'update-item update-item-selectable';
+            item.innerHTML = `
+                <input type="checkbox" class="update-checkbox" data-key="${update.key}" checked>
+                <span class="update-item-name">${update.name}</span>
+                <span class="update-item-versions">
+                    <span class="current">${update.current}</span>
+                    <span class="arrow">→</span>
+                    <span class="latest">${update.latest}</span>
+                </span>
+            `;
+            updateList.appendChild(item);
+        });
+    }
+
+    // Add section header for app if there are app updates
+    if (appUpdates.length > 0) {
+        const appHeader = document.createElement('div');
+        appHeader.className = 'update-section-header';
+        appHeader.textContent = 'WebUI Application';
+        updateList.appendChild(appHeader);
+
+        appUpdates.forEach(update => {
+            const item = document.createElement('label');
+            item.className = 'update-item update-item-selectable';
+            item.innerHTML = `
+                <input type="checkbox" class="update-checkbox" data-key="${update.key}" checked>
+                <span class="update-item-name">${update.name}</span>
+                <span class="update-item-versions">
+                    <span class="current">${update.current}</span>
+                    <span class="arrow">→</span>
+                    <span class="latest">${update.latest}</span>
+                </span>
+            `;
+            updateList.appendChild(item);
+        });
+    }
 
     // Show modal
     updateModal.style.display = 'flex';
@@ -148,13 +183,27 @@ function showUpdateModal(updates) {
 
 function hideUpdateModal() {
     updateModal.style.display = 'none';
+    // Reset button states
+    updateConfirmBtn.disabled = false;
+    updateConfirmBtn.textContent = 'Update Selected';
+    updateCancelBtn.style.display = 'inline-block';
+}
+
+function getSelectedUpdates() {
+    const checkboxes = updateList.querySelectorAll('.update-checkbox:checked');
+    const selectedKeys = Array.from(checkboxes).map(cb => cb.dataset.key);
+    return pendingUpdates.filter(u => selectedKeys.includes(u.key));
 }
 
 // Update modal button handlers
 updateCancelBtn.addEventListener('click', hideUpdateModal);
 
 updateConfirmBtn.addEventListener('click', async () => {
-    if (pendingUpdates.length === 0) return;
+    const selectedUpdates = getSelectedUpdates();
+    if (selectedUpdates.length === 0) {
+        alert('Please select at least one component to update.');
+        return;
+    }
 
     // Disable buttons and show progress
     updateConfirmBtn.disabled = true;
@@ -165,7 +214,7 @@ updateConfirmBtn.addEventListener('click', async () => {
     updateList.innerHTML = `
         <div class="update-progress">
             <span class="spinner"></span>
-            Installing updates... Check console for progress.
+            Installing ${selectedUpdates.length} update(s)... Check console for progress.
         </div>
     `;
 
@@ -176,7 +225,7 @@ updateConfirmBtn.addEventListener('click', async () => {
 
     try {
         const formData = new FormData();
-        formData.append('updates', JSON.stringify(pendingUpdates));
+        formData.append('updates', JSON.stringify(selectedUpdates));
 
         const response = await fetch('/install-updates', {
             method: 'POST',
@@ -196,7 +245,7 @@ updateConfirmBtn.addEventListener('click', async () => {
                 Update failed. Please try again later.
             </div>
         `;
-        updateConfirmBtn.textContent = 'Update';
+        updateConfirmBtn.textContent = 'Update Selected';
         updateConfirmBtn.disabled = false;
         updateCancelBtn.style.display = 'inline-block';
     }
