@@ -430,16 +430,16 @@ h1 {
 }
 
 .update-modal {
-    background: var(--card-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--border-color);
-    border-radius: 1.5rem;
-    padding: 2rem;
-    max-width: 500px;
+    background: rgba(20, 20, 20, 0.75);
+    backdrop-filter: blur(32px);
+    -webkit-backdrop-filter: blur(32px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 1.75rem;
+    padding: 2.5rem;
+    max-width: 550px;
     width: 90%;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(255, 0, 105, 0.1);
-    animation: slideUp 0.3s ease;
+    box-shadow: 0 40px 80px -12px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @keyframes slideUp {
@@ -509,9 +509,11 @@ h1 {
     gap: 0.75rem;
 }
 
-.update-item-selectable:has(.update-checkbox:checked) {
-    border-color: var(--accent-primary);
-    background: rgba(255, 0, 105, 0.05);
+@supports selector(:has(:checked)) {
+    .update-item-selectable:has(.update-checkbox:checked) {
+        border-color: var(--accent-primary);
+        background: rgba(255, 0, 105, 0.05);
+    }
 }
 
 .update-checkbox {
@@ -564,16 +566,17 @@ h1 {
     justify-content: flex-end;
 }
 
-.btn-cancel {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--text-secondary);
-    box-shadow: none;
+.update-modal .btn-cancel {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    color: rgba(255, 255, 255, 0.9) !important;
+    box-shadow: none !important;
+    border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.15);
-    box-shadow: none;
+.update-modal .btn-cancel:hover {
+    background-color: rgba(255, 255, 255, 0.15) !important;
     transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.1);
 }
 
 .btn-update {

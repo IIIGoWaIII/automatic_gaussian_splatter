@@ -6,4 +6,5 @@ colmap-x64-windows-cuda/
 colmap-x64-windows-cuda_backup/
 uploads/
 app.log
-__pycache__
+__pycache__/
+target/

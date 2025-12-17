@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Callable, Optional
 import shutil
 import re
+import hashlib
 from utils import logger, ensure_directory, get_project_root
 
 import cv2
@@ -278,49 +279,42 @@ class PipelineManager:
             logger.error(f"Failed to trigger shutdown: {e}")
             await log_callback(f"Failed to trigger shutdown: {e}\n")
 
-    def calculate_dhash(self, image, hash_size=8):
+    def calculate_md5(self, file_path: Path, chunk_size: int = 8192) -> str:
         """
-        Calculate difference hash (dHash) for an image.
+        Calculate MD5 hash of a file.
         """
-        try:
-            # Resize
-            resized = cv2.resize(image, (hash_size + 1, hash_size))
-            # Convert to grayscale
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            # Compare adjacent pixels
-            diff = gray[:, 1:] > gray[:, :-1]
-            # Convert to integer
-            return sum([2 ** i for (i, v) in enumerate(diff.flatten()) if v])
-        except Exception as e:
-            logger.error(f"dHash failed: {e}")
-            return 0
+        md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            while chunk := f.read(chunk_size):
+                md5.update(chunk)
+        return md5.hexdigest()
 
     def remove_duplicates(self, images_dir: Path, log_callback: Callable[[str], None]) -> int:
         """
-        Find and remove duplicate images using dHash.
+        Find and remove duplicate images using MD5 hashing (exact duplicates).
         Returns number of removed images.
         """
         image_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
         hashes = {}
         duplicates = []
         
+        # Sort files to ensure deterministic behavior (e.g. keep the first one alphabetically)
         files = sorted([f for f in images_dir.iterdir() if f.suffix.lower() in image_extensions])
         
         count = 0
         total = len(files)
         
-        for i, file_path in enumerate(files):
+        logger.info(f"Scanning {total} files for duplicates using MD5...")
+        
+        for file_path in files:
             try:
-                img = cv2.imread(str(file_path))
-                if img is None:
-                    continue
+                # Compute MD5
+                file_hash = self.calculate_md5(file_path)
                 
-                h = self.calculate_dhash(img)
-                
-                if h in hashes:
+                if file_hash in hashes:
                     duplicates.append(file_path)
                 else:
-                    hashes[h] = file_path
+                    hashes[file_hash] = file_path
             except Exception as e:
                 logger.error(f"Error checking duplicate for {file_path}: {e}")
         
