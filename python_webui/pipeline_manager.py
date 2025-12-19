@@ -5,6 +5,7 @@ from typing import List, Callable, Optional
 import shutil
 import re
 import hashlib
+import subprocess
 from utils import logger, ensure_directory, get_project_root
 
 import cv2
@@ -167,11 +168,12 @@ class PipelineManager:
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
                 # Use standard brush args (no start-iter)
                 # Define monitor for Brush
-                async def brush_monitor(proc):
-                    await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                async def brush_monitor(proc, term_ctx):
+                    await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
                 
                 brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
+                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
                 
                 await log_callback("--- Training Completed Successfully ---\n")
                 
@@ -203,13 +205,14 @@ class PipelineManager:
             await log_callback(f"Target steps: {brush_settings.get('total_steps', 30000)}\n")
             
             try:
-                # Define monitor for Brush
-                async def brush_monitor(proc):
-                    await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
-
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
+
+                # Define monitor for Brush
+                async def brush_monitor(proc, term_ctx):
+                    await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
                 brush_args = self._build_resume_brush_args(task_dir, model_dir, start_iter, brush_cfg)
-                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
+                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
                 
                 await log_callback("--- Resume Training Completed Successfully ---\n")
 
@@ -220,7 +223,7 @@ class PipelineManager:
                 await log_callback(f"\nCRITICAL ERROR: {str(e)}\n")
                 raise e
 
-    async def run_command(self, command: str, args: List[str], log_callback: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None, monitor_completion: Optional[Callable[[asyncio.subprocess.Process], asyncio.Task]] = None):
+    async def run_command(self, command: str, args: List[str], log_callback: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None, monitor_completion: Optional[Callable[[asyncio.subprocess.Process, dict], asyncio.Task]] = None):
         """Runs a shell command asynchronously and streams output."""
         full_command = f'"{command}" ' + " ".join(args)
         logger.info(f"Starting command: {full_command}")
@@ -235,10 +238,13 @@ class PipelineManager:
             cwd=cwd
         )
 
+        # Context to track if we intentionally killed the process
+        termination_context = {"intentional": False}
+
         # Start monitor if provided
         monitor_task = None
         if monitor_completion:
-            monitor_task = asyncio.create_task(monitor_completion(process))
+            monitor_task = asyncio.create_task(monitor_completion(process, termination_context))
 
         async def read_stream(stream, callback):
             while True:
@@ -273,18 +279,20 @@ class PipelineManager:
             except asyncio.CancelledError:
                 pass
 
-        if return_code != 0 and return_code != -1: # -1 might be from termination
+        # On Windows, terminating a process often returns 1 or other non-zero codes.
+        # If we intentionally killed it, we treat it as success.
+        if return_code != 0 and not termination_context["intentional"]:
             error_msg = f"Command failed with exit code {return_code}"
             logger.error(error_msg)
             if log_callback:
                 await log_callback(f"ERROR: {error_msg}\n")
             raise Exception(error_msg)
         
-        logger.info("Command finished successfully")
+        logger.info(f"Command finished {'successfully' if return_code == 0 or termination_context['intentional'] else 'with code ' + str(return_code)}")
         if log_callback:
             await log_callback("Command finished successfully\n")
 
-    async def monitor_brush_completion(self, process: asyncio.subprocess.Process, model_dir: Path, target_steps: int, log_callback: Callable[[str], None]):
+    async def monitor_brush_completion(self, process: asyncio.subprocess.Process, termination_context: dict, model_dir: Path, target_steps: int, log_callback: Callable[[str], None]):
         """Periodically checks for the final export PLY file and terminates the process if found."""
         target_file = model_dir / f"export_{target_steps:05d}.ply"
         # Also check without leading zeros just in case
@@ -296,9 +304,14 @@ class PipelineManager:
             if target_file.exists() or target_file_alt.exists():
                 await log_callback(f"\n[INFO] Final export detected. Training at target steps ({target_steps}) is complete.\n")
                 await log_callback("[INFO] Automatically closing Brush to proceed...\n")
-                logger.info("Completion file found. Terminating Brush process.")
+                logger.info("Completion file found. Terminating Brush process tree.")
+                termination_context["intentional"] = True
                 try:
-                    process.terminate()
+                    # On Windows, we use taskkill to ensure the whole process tree (shell + app) is killed
+                    if os.name == 'nt':
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], capture_output=True)
+                    else:
+                        process.terminate()
                 except Exception as e:
                     logger.error(f"Failed to terminate Brush: {e}")
                 break
@@ -628,11 +641,12 @@ class PipelineManager:
                 shutil.copytree(best_model_path, final_sparse_dir / "0")
 
             # Define monitor for Brush
-            async def brush_monitor(proc):
-                await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+            async def brush_monitor(proc, term_ctx):
+                await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
 
             brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-            await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
+            monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+            await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
 
             await log_callback("--- Pipeline Completed Successfully ---\n")
 
