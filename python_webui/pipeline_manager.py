@@ -166,8 +166,12 @@ class PipelineManager:
             try:
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
                 # Use standard brush args (no start-iter)
+                # Define monitor for Brush
+                async def brush_monitor(proc):
+                    await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                
                 brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-                await self.run_command(BRUSH_PATH, brush_args, log_callback)
+                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
                 
                 await log_callback("--- Training Completed Successfully ---\n")
                 
@@ -199,9 +203,13 @@ class PipelineManager:
             await log_callback(f"Target steps: {brush_settings.get('total_steps', 30000)}\n")
             
             try:
+                # Define monitor for Brush
+                async def brush_monitor(proc):
+                    await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
                 brush_args = self._build_resume_brush_args(task_dir, model_dir, start_iter, brush_cfg)
-                await self.run_command(BRUSH_PATH, brush_args, log_callback)
+                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
                 
                 await log_callback("--- Resume Training Completed Successfully ---\n")
 
@@ -212,7 +220,7 @@ class PipelineManager:
                 await log_callback(f"\nCRITICAL ERROR: {str(e)}\n")
                 raise e
 
-    async def run_command(self, command: str, args: List[str], log_callback: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None):
+    async def run_command(self, command: str, args: List[str], log_callback: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None, monitor_completion: Optional[Callable[[asyncio.subprocess.Process], asyncio.Task]] = None):
         """Runs a shell command asynchronously and streams output."""
         full_command = f'"{command}" ' + " ".join(args)
         logger.info(f"Starting command: {full_command}")
@@ -226,6 +234,11 @@ class PipelineManager:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd
         )
+
+        # Start monitor if provided
+        monitor_task = None
+        if monitor_completion:
+            monitor_task = asyncio.create_task(monitor_completion(process))
 
         async def read_stream(stream, callback):
             while True:
@@ -251,7 +264,16 @@ class PipelineManager:
         )
 
         return_code = await process.wait()
-        if return_code != 0:
+        
+        # Cancel monitor if it's still running
+        if monitor_task and not monitor_task.done():
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        if return_code != 0 and return_code != -1: # -1 might be from termination
             error_msg = f"Command failed with exit code {return_code}"
             logger.error(error_msg)
             if log_callback:
@@ -261,6 +283,26 @@ class PipelineManager:
         logger.info("Command finished successfully")
         if log_callback:
             await log_callback("Command finished successfully\n")
+
+    async def monitor_brush_completion(self, process: asyncio.subprocess.Process, model_dir: Path, target_steps: int, log_callback: Callable[[str], None]):
+        """Periodically checks for the final export PLY file and terminates the process if found."""
+        target_file = model_dir / f"export_{target_steps:05d}.ply"
+        # Also check without leading zeros just in case
+        target_file_alt = model_dir / f"export_{target_steps}.ply"
+        
+        logger.info(f"Monitoring for completion file: {target_file}")
+        
+        while process.returncode is None:
+            if target_file.exists() or target_file_alt.exists():
+                await log_callback(f"\n[INFO] Final export detected. Training at target steps ({target_steps}) is complete.\n")
+                await log_callback("[INFO] Automatically closing Brush to proceed...\n")
+                logger.info("Completion file found. Terminating Brush process.")
+                try:
+                    process.terminate()
+                except Exception as e:
+                    logger.error(f"Failed to terminate Brush: {e}")
+                break
+            await asyncio.sleep(5) # Poll every 5 seconds
 
     async def trigger_shutdown(self, log_callback: Callable[[str], None]):
         """Triggers system shutdown after a delay."""
@@ -585,10 +627,17 @@ class PipelineManager:
                 
                 shutil.copytree(best_model_path, final_sparse_dir / "0")
 
+            # Define monitor for Brush
+            async def brush_monitor(proc):
+                await self.monitor_brush_completion(proc, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+
             brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-            await self.run_command(BRUSH_PATH, brush_args, log_callback)
+            await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if brush_cfg.get("with_viewer") else None)
 
             await log_callback("--- Pipeline Completed Successfully ---\n")
+
+            if brush_cfg.get("shutdown_after_training"):
+                await self.trigger_shutdown(log_callback)
 
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
