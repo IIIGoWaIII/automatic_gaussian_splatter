@@ -382,16 +382,31 @@ ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === 'log') {
+        // Output to multi-image console
         const line = document.createElement('div');
         line.className = 'console-line';
         line.textContent = `> ${data.message}`;
         consoleOutput.appendChild(line);
         consoleWindow.scrollTop = consoleWindow.scrollHeight;
 
+        // Also output to single-image console if visible
+        if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
+            const singleLine = document.createElement('div');
+            singleLine.className = 'console-line';
+            singleLine.textContent = `> ${data.message}`;
+            singleConsoleOutput.appendChild(singleLine);
+            singleConsoleWindow.scrollTop = singleConsoleWindow.scrollHeight;
+        }
+
         // Simple heuristic to update steps based on logs
         if (data.message.includes('Step 1')) updateStep('stacking');
         if (data.message.includes('COLMAP') || data.message.includes('Step 2')) updateStep('tracking');
         if (data.message.includes('Brush') || data.message.includes('Step 3')) updateStep('training');
+
+        // Single workflow step update
+        if (data.message.includes('SHARP')) {
+            singleStepProcess.classList.add('active');
+        }
     }
 
     if (data.type === 'status') {
@@ -412,18 +427,39 @@ ws.onmessage = (event) => {
         }
 
         if (data.status === 'completed') {
+            // Multi-image workflow
             const line = document.createElement('div');
             line.className = 'console-line';
             line.style.color = 'var(--success)';
             line.textContent = 'DONE! Output available in processing_output folder.';
             consoleOutput.appendChild(line);
             markAllCompleted();
+
+            // Single image workflow
+            if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
+                const singleLine = document.createElement('div');
+                singleLine.className = 'console-line';
+                singleLine.style.color = 'var(--success)';
+                singleLine.textContent = 'DONE! 3D Gaussians saved to processing_output folder.';
+                singleConsoleOutput.appendChild(singleLine);
+                singleStepProcess.classList.remove('active');
+                singleStepProcess.classList.add('completed');
+            }
         } else if (data.status === 'failed') {
             const line = document.createElement('div');
             line.className = 'console-line';
             line.style.color = 'var(--error)';
             line.textContent = 'FAILED! See logs above.';
             consoleOutput.appendChild(line);
+
+            // Single image workflow
+            if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
+                const singleLine = document.createElement('div');
+                singleLine.className = 'console-line';
+                singleLine.style.color = 'var(--error)';
+                singleLine.textContent = 'FAILED! See logs above.';
+                singleConsoleOutput.appendChild(singleLine);
+            }
         }
     }
 };
@@ -610,5 +646,97 @@ dropZone.addEventListener('drop', (e) => {
 fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) {
         handleFileSelection(e.target.files);
+    }
+});
+
+// ==========================================
+// SINGLE IMAGE WORKFLOW (Sharp)
+// ==========================================
+
+const singleDropZone = document.getElementById('singleDropZone');
+const singleFileInput = document.getElementById('singleFileInput');
+const singleProjectName = document.getElementById('singleProjectName');
+const sharpDevice = document.getElementById('sharpDevice');
+const singlePipelineStatus = document.getElementById('singlePipelineStatus');
+const singleConsoleWindow = document.getElementById('singleConsoleWindow');
+const singleConsoleOutput = document.getElementById('singleConsoleOutput');
+const singleStepProcess = document.getElementById('singleStepProcess');
+
+// Handle single image selection
+function handleSingleImageSelection(files) {
+    if (files.length === 0) return;
+
+    const file = files[0];
+    if (!file.type.startsWith('image/')) {
+        alert('Please select an image file (JPG, PNG, or WEBP)');
+        return;
+    }
+
+    startSingleUpload(file);
+}
+
+async function startSingleUpload(file) {
+    // Show console
+    singleDropZone.style.display = 'none';
+    singlePipelineStatus.style.display = 'flex';
+    singleConsoleWindow.style.display = 'block';
+    singleConsoleOutput.innerHTML = '';
+    singleStepProcess.classList.add('active');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('device', sharpDevice.value);
+    formData.append('render', 'false');
+
+    const projectName = singleProjectName.value.trim();
+    if (projectName) {
+        formData.append('projectName', projectName);
+    }
+
+    try {
+        const response = await fetch('/upload-single', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) throw new Error('Upload failed');
+
+        const result = await response.json();
+        console.log('Sharp task started:', result.task_id);
+    } catch (err) {
+        console.error(err);
+        alert('Error uploading image. Check console.');
+        resetSingleWorkflow();
+    }
+}
+
+function resetSingleWorkflow() {
+    singleDropZone.style.display = 'block';
+    singlePipelineStatus.style.display = 'none';
+    singleConsoleWindow.style.display = 'none';
+    singleStepProcess.classList.remove('active', 'completed');
+}
+
+// Drag and Drop for Single Image
+singleDropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    singleDropZone.classList.add('dragover');
+});
+
+singleDropZone.addEventListener('dragleave', () => {
+    singleDropZone.classList.remove('dragover');
+});
+
+singleDropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    singleDropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) {
+        handleSingleImageSelection(e.dataTransfer.files);
+    }
+});
+
+singleFileInput.addEventListener('change', (e) => {
+    if (e.target.files.length) {
+        handleSingleImageSelection(e.target.files);
     }
 });

@@ -15,6 +15,7 @@ import numpy as np
 REPO_ROOT = get_project_root().parent
 COLMAP_BAT_PATH = str(REPO_ROOT / "colmap-x64-windows-cuda" / "COLMAP.bat")
 BRUSH_PATH = str(REPO_ROOT / "brush-app-x86_64-pc-windows-msvc" / "brush_app.exe")
+SHARP_PATH = str(REPO_ROOT / "ml-sharp" / ".venv" / "Scripts" / "sharp.exe")
 
 DEFAULT_COLMAP_SETTINGS = {
     "sparse": 1,      # Build sparse model
@@ -333,6 +334,52 @@ class PipelineManager:
         except Exception as e:
             logger.error(f"Failed to trigger shutdown: {e}")
             await log_callback(f"Failed to trigger shutdown: {e}\n")
+
+    async def run_sharp(self, input_path: str, output_path: str, device: str, render: bool, log_callback: Callable[[str], None]):
+        """
+        Run Sharp model for single-image 3DGS generation.
+        
+        Args:
+            input_path: Path to the input image
+            output_path: Path to save output Gaussians
+            device: Device to run on (cuda, cpu, mps)
+            render: Whether to render trajectory video
+            log_callback: Callback for streaming logs
+        """
+        await log_callback("--- Running SHARP (Single Image 3DGS) ---\n")
+        await log_callback(f"Input: {input_path}\n")
+        await log_callback(f"Output: {output_path}\n")
+        await log_callback(f"Device: {device}, Render: {render}\n")
+        
+        # Path to the pre-downloaded checkpoint (avoids SSL issues during download)
+        import os
+        checkpoint_path = Path(os.path.expanduser("~")) / ".cache" / "torch" / "hub" / "checkpoints" / "sharp_2572gikvuh.pt"
+        
+        # Build Sharp arguments
+        args = [
+            "predict",
+            f"-i \"{input_path}\"",
+            f"-o \"{output_path}\"",
+            f"--device {device}",
+        ]
+        
+        # Use pre-downloaded checkpoint if available
+        if checkpoint_path.exists():
+            args.append(f"-c \"{checkpoint_path}\"")
+            await log_callback(f"Using cached checkpoint: {checkpoint_path}\n")
+        
+        if render:
+            args.append("--render")
+        else:
+            args.append("--no-render")
+        
+        try:
+            await self.run_command(SHARP_PATH, args, log_callback)
+            await log_callback("--- SHARP Processing Completed ---\n")
+        except Exception as e:
+            logger.error(f"Sharp processing failed: {e}")
+            await log_callback(f"\nCRITICAL ERROR: {str(e)}\n")
+            raise e
 
     def calculate_md5(self, file_path: Path, chunk_size: int = 8192) -> str:
         """

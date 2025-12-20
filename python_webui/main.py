@@ -82,6 +82,77 @@ async def get_index():
     with open(BASE_DIR / "templates" / "index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(content=f.read(), status_code=200)
 
+@app.post("/upload-single")
+async def upload_single_image(
+    file: UploadFile = File(...),
+    device: str = Form("cuda"),
+    render: str = Form("true"),
+    projectName: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None
+):
+    """Upload a single image for Sharp 3DGS generation."""
+    try:
+        task_id = str(uuid.uuid4())
+        
+        # Create output directory
+        project_folder = projectName if projectName else task_id[:8]
+        output_path = OUTPUT_DIR / f"sharp_{project_folder}"
+        ensure_directory(output_path)
+        
+        # Save uploaded image
+        input_path = output_path / file.filename
+        with open(input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        logger.info(f"Single image uploaded: {file.filename} -> {output_path}")
+        
+        # Parse render setting
+        should_render = render.lower() == "true"
+        
+        # Start Sharp processing in background
+        background_tasks.add_task(
+            start_sharp_pipeline,
+            task_id,
+            str(input_path),
+            str(output_path),
+            device,
+            should_render
+        )
+        
+        return {"task_id": task_id, "status": "uploaded", "message": "Sharp processing started"}
+    except Exception as e:
+        logger.error(f"Single image upload failed: {e}")
+        return {"error": str(e)}
+
+async def start_sharp_pipeline(task_id: str, input_path: str, output_path: str, device: str, render: bool):
+    """Background task to run Sharp model."""
+    async def log_callback(msg: str):
+        try:
+            await ws_manager.broadcast(json.dumps({
+                "type": "log",
+                "task_id": task_id,
+                "message": msg
+            }))
+        except Exception as e:
+            logger.error(f"Failed to broadcast log: {e}")
+
+    try:
+        await manager.run_sharp(input_path, output_path, device, render, log_callback)
+        await log_callback("Sharp processing finished successfully!")
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "completed"
+        }))
+    except Exception as e:
+        logger.exception(f"Sharp pipeline failed for task {task_id}")
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "failed"
+        }))
+
+
 @app.post("/upload")
 async def upload_dataset(
     files: List[UploadFile] = File(...), 

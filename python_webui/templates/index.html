@@ -240,12 +240,59 @@
         </div>
 
         <div id="workflow-single" style="display: none;">
-            <div class="glass-card" style="text-align: center; padding: 5rem 2rem;">
-                <div class="upload-icon" style="opacity: 0.2; margin-bottom: 1rem;">✨</div>
-                <h3 style="color: var(--text-secondary);">Single Image / Object Reconstruction</h3>
-                <p style="color: var(--text-secondary); opacity: 0.6; max-width: 400px; margin: 0 auto;">This workflow
-                    is coming soon. It will allow you to reconstruct detailed 3D objects from a single image or a small
-                    set of photos.</p>
+            <div class="glass-card">
+                <!-- Sharp Settings -->
+                <div class="settings-grid">
+                    <div class="settings-card">
+                        <div class="settings-card__header">
+                            <div>
+                                <h3>Sharp Settings</h3>
+                                <p class="settings-subtitle">Single Image 3DGS Generation</p>
+                            </div>
+                        </div>
+                        <label class="field-label" for="sharpDevice">Device</label>
+                        <select id="sharpDevice" class="field-control">
+                            <option value="cuda" selected>CUDA (GPU)</option>
+                            <option value="cpu">CPU</option>
+                        </select>
+                        <p class="settings-hint">SHARP generates 3D Gaussians from a single image in under a second.</p>
+                    </div>
+                </div>
+
+                <!-- Project Name Section -->
+                <div class="settings-card" style="margin-bottom: 1.5rem;">
+                    <div class="settings-card__header">
+                        <div>
+                            <h3>Project Settings</h3>
+                            <p class="settings-subtitle">Output folder name</p>
+                        </div>
+                    </div>
+                    <label class="field-label" for="singleProjectName">Project Name (optional)</label>
+                    <input type="text" id="singleProjectName" class="field-control" placeholder="e.g., my_object"
+                        pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores and hyphens allowed">
+                    <p class="settings-hint">Leave empty to auto-generate. Use only letters, numbers, underscores or
+                        hyphens.</p>
+                </div>
+
+                <!-- Upload Section -->
+                <div id="singleDropZone" class="upload-area">
+                    <div class="upload-icon">🖼️</div>
+                    <h3>Drop a Single Image here</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 2rem;">JPG, PNG, or WEBP</p>
+                    <input type="file" id="singleFileInput" hidden accept="image/*">
+                    <button class="btn" onclick="document.getElementById('singleFileInput').click()">Select
+                        Image</button>
+                </div>
+
+                <!-- Pipeline Status Indicators -->
+                <div id="singlePipelineStatus" class="pipeline-status" style="display: none;">
+                    <div id="singleStepProcess" class="step" title="Processing">1</div>
+                </div>
+
+                <!-- Console Output -->
+                <div id="singleConsoleWindow" class="console-window" style="display: none;">
+                    <div id="singleConsoleOutput"></div>
+                </div>
             </div>
         </div>
     </div>
