@@ -471,7 +471,11 @@ class UpdateManager:
         
         try:
             # 2. Git Clone or Pull
-            if not sharp_path.exists():
+            if not sharp_path.exists() or not (sharp_path / ".git").exists():
+                if sharp_path.exists():
+                    log("Cleaning up existing incomplete installation...")
+                    self._safe_rmtree(sharp_path)
+                
                 log(f"Cloning ML-Sharp from {SHARP_REPO_URL}...")
                 result = subprocess.run(
                     ["git", "clone", SHARP_REPO_URL, SHARP_FOLDER],
@@ -501,7 +505,6 @@ class UpdateManager:
             venv_path = sharp_path / ".venv"
             if not venv_path.exists():
                 log("Creating virtual environment...")
-                # Split python_exe if it's "py -3.13"
                 py_args = python_exe.split()
                 result = subprocess.run(
                     [*py_args, "-m", "venv", ".venv"],
@@ -514,24 +517,57 @@ class UpdateManager:
                     log(f"Venv creation failed: {result.stderr}")
                     return False
             
-            # 4. Install Dependencies
-            log("Installing dependencies (this may take several minutes, ~2GB download)...")
+            # 4. Install Dependencies & Package
+            log("Installing dependencies and the 'sharp' package...")
+            # On Windows, PIP is in Scripts/pip.exe
             pip_exe = venv_path / "Scripts" / "pip.exe"
+            
             # Ensure we're using the latest pip
             subprocess.run([str(pip_exe), "install", "--upgrade", "pip"], cwd=str(sharp_path), timeout=120)
             
-            # Install ml-sharp in editable mode which handles requirements.txt
+            # Install CUDA-enabled torch and torchvision FIRST to prevent CPU versions from being pulled in
+            log("Installing CUDA-enabled PyTorch (this involves a large download)...")
+            subprocess.run(
+                [str(pip_exe), "install", "torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu124", "--force-reinstall"],
+                cwd=str(sharp_path),
+                timeout=600 # 10 minutes
+            )
+
+            # Install ml-sharp in editable mode - this is CRITICAL as it generates the 'sharp.exe' entry point
+            log("Installing the 'sharp' package in editable mode...")
             result = subprocess.run(
                 [str(pip_exe), "install", "-e", "."],
                 cwd=str(sharp_path),
                 capture_output=True,
                 text=True,
-                timeout=600 # 10 minutes
+                timeout=300
             )
             if result.returncode != 0:
-                log(f"Dependency installation failed: {result.stderr}")
+                log(f"Package installation failed: {result.stderr}")
                 return False
             
+            # Verify the entry point was created
+            sharp_exe = venv_path / "Scripts" / "sharp.exe"
+            if not sharp_exe.exists():
+                log("Error: 'sharp.exe' was not created. Attempting alternative installation...")
+                subprocess.run([str(pip_exe), "install", "."], cwd=str(sharp_path), timeout=300)
+                if not sharp_exe.exists():
+                    log("Critical Error: Failed to generate 'sharp.exe' entry point.")
+                    return False
+
+            # Verify CUDA availability in the newly created venv
+            log("Verifying CUDA availability...")
+            verify_result = subprocess.run(
+                [str(venv_path / "Scripts" / "python.exe"), "-c", "import torch; print(torch.cuda.is_available())"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if "True" not in verify_result.stdout:
+                log("Warning: Torch was installed but CUDA is reported as not available.")
+            else:
+                log("CUDA availability verified!")
+
             # 5. Pre-download Model Checkpoint (Avoid SSL issues at runtime)
             checkpoint_dir = Path(os.path.expanduser("~")) / ".cache" / "torch" / "hub" / "checkpoints"
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -539,8 +575,6 @@ class UpdateManager:
             
             if not checkpoint_path.exists():
                 log(f"Downloading model checkpoint (~500MB)...")
-                
-                # Use a specific SSL context to bypass verification if needed (user had issues)
                 import ssl
                 ssl_context = ssl._create_unverified_context()
                 
@@ -549,7 +583,6 @@ class UpdateManager:
                     if pct % 10 == 0:
                         log(f"Checkpoint download progress: {pct}%")
                 
-                # We need a modified download_file that accepts an SSL context
                 try:
                     req = urllib.request.Request(SHARP_CHECKPOINT_URL)
                     req.add_header('User-Agent', 'AutomaticGaussianSplatter/1.0')
@@ -558,7 +591,7 @@ class UpdateManager:
                         downloaded = 0
                         with open(checkpoint_path, 'wb') as f:
                             while True:
-                                chunk = response.read(8192)
+                                chunk = response.read(16384)
                                 if not chunk: break
                                 f.write(chunk)
                                 downloaded += len(chunk)
@@ -566,7 +599,6 @@ class UpdateManager:
                     log("Checkpoint downloaded successfully!")
                 except Exception as e:
                     log(f"Warning: Failed to pre-download checkpoint: {e}")
-                    log("You might encounter SSL issues when running Sharp for the first time.")
             
             # 6. Update version
             versions = self._load_versions()
