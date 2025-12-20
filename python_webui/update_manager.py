@@ -189,9 +189,24 @@ class UpdateManager:
     def _get_local_sharp_commit(self) -> str:
         """Get the current git commit SHA of the local ml-sharp folder."""
         sharp_path = self.project_root / SHARP_FOLDER
-        if not sharp_path.exists():
+        if not sharp_path.exists() or not (sharp_path / ".git").exists():
             return ""
+        
         try:
+            # Verify remote URL to ensure it's not pointing to the main project app repo
+            remote_result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=str(sharp_path),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if remote_result.returncode == 0:
+                remote_url = remote_result.stdout.strip()
+                if "apple/ml-sharp" not in remote_url.lower():
+                    logger.warning(f"ML-Sharp folder has incorrect remote: {remote_url}")
+                    return "" # Treat as not installed/invalid
+            
             result = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=str(sharp_path),
@@ -488,6 +503,18 @@ class UpdateManager:
                     log(f"Clone failed: {result.stderr}")
                     return False
             else:
+                # Verify remote URL before pull
+                remote_check = subprocess.run(
+                    ["git", "remote", "get-url", "origin"],
+                    cwd=str(sharp_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if remote_check.returncode == 0 and "apple/ml-sharp" not in remote_check.stdout.lower():
+                    log("Fixing incorrect ML-Sharp remote URL...")
+                    subprocess.run(["git", "remote", "set-url", "origin", SHARP_REPO_URL], cwd=str(sharp_path))
+                
                 log("Updating ML-Sharp repository...")
                 subprocess.run(["git", "fetch", "origin"], cwd=str(sharp_path), timeout=60)
                 result = subprocess.run(
