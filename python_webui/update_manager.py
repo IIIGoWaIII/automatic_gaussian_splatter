@@ -33,6 +33,13 @@ BRUSH_ASSET_NAME = "brush-app-x86_64-pc-windows-msvc.zip"
 # Local folder names
 COLMAP_FOLDER = "colmap-x64-windows-cuda"
 BRUSH_FOLDER = "brush-app-x86_64-pc-windows-msvc"
+SHARP_FOLDER = "ml-sharp"
+
+# ML-Sharp specific
+SHARP_REPO = "apple/ml-sharp"
+SHARP_REPO_URL = "https://github.com/apple/ml-sharp.git"
+SHARP_CHECKPOINT_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
+SHARP_CHECKPOINT_NAME = "sharp_2572gikvuh.pt"
 
 
 class UpdateManager:
@@ -172,6 +179,39 @@ class UpdateManager:
             return data[0].get("sha", "")
         return None
     
+    def _get_latest_sharp_commit(self) -> Optional[str]:
+        """Get latest commit SHA from ML-Sharp repo."""
+        data = self._github_api_request(f"/repos/{SHARP_REPO}/commits?per_page=1")
+        if data and len(data) > 0:
+            return data[0].get("sha", "")
+        return None
+    
+    def _get_local_sharp_commit(self) -> str:
+        """Get the current git commit SHA of the local ml-sharp folder."""
+        sharp_path = self.project_root / SHARP_FOLDER
+        if not sharp_path.exists():
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(sharp_path),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            logger.warning(f"Could not get sharp git commit: {e}")
+        return ""
+    
+    def _is_sharp_installed(self) -> bool:
+        """Check if ML-Sharp is properly installed with venv."""
+        sharp_path = self.project_root / SHARP_FOLDER
+        venv_path = sharp_path / ".venv"
+        sharp_exe = venv_path / "Scripts" / "sharp.exe"
+        return sharp_exe.exists()
+    
     def check_for_updates(self) -> Dict:
         """
         Check for available updates for all components.
@@ -221,6 +261,22 @@ class UpdateManager:
                     "current": local_commit[:8] if local_commit else "Unknown",
                     "latest": latest_commit[:8],
                     "download_url": ""  # Uses git pull
+                })
+        
+        # Check ML-Sharp
+        latest_sharp = self._get_latest_sharp_commit()
+        if latest_sharp:
+            local_sharp = self._get_local_sharp_commit()
+            is_installed = self._is_sharp_installed()
+            
+            # Show update if: not installed OR commit differs
+            if not is_installed or (latest_sharp and latest_sharp != local_sharp):
+                updates.append({
+                    "name": "ML-Sharp (Single Image 3DGS)",
+                    "key": "sharp",
+                    "current": local_sharp[:8] if local_sharp else ("Not Installed" if not is_installed else "Unknown"),
+                    "latest": latest_sharp[:8],
+                    "download_url": SHARP_REPO_URL
                 })
         
         return {
@@ -372,8 +428,157 @@ class UpdateManager:
             return self._update_component(
                 "Brush", download_url, BRUSH_FOLDER, "brush", latest_version, log
             )
+        elif app_key == "sharp":
+            return self._install_sharp(latest_version, log)
         else:
             log(f"Unknown app key: {app_key}")
+            return False
+
+    def _get_python_executable(self, log) -> Optional[str]:
+        """Find a suitable Python 3.13 executable."""
+        # Try common names
+        for cmd in ["python3.13", "python313", "python", "py"]:
+            try:
+                args = [cmd, "--version"]
+                if cmd == "py":
+                    args = ["py", "-3.13", "--version"]
+                
+                result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    version = result.stdout.strip() or result.stderr.strip()
+                    if "3.13" in version:
+                        return cmd if cmd != "py" else "py -3.13"
+                    elif cmd == "python" or cmd == "python3":
+                        # If it's just 'python', check if it's 3.13
+                        if "3.13" in version:
+                           return cmd
+            except:
+                continue
+        return None
+
+    def _install_sharp(self, latest_commit: str, log) -> bool:
+        """Full installation flow for ML-Sharp."""
+        log("Starting ML-Sharp installation/update...")
+        
+        # 1. Check Python 3.13
+        python_exe = self._get_python_executable(log)
+        if not python_exe:
+            log("Error: Python 3.13 not found. ML-Sharp requires Python 3.13.")
+            log("Please install Python 3.13 from python.org and try again.")
+            return False
+        
+        sharp_path = self.project_root / SHARP_FOLDER
+        
+        try:
+            # 2. Git Clone or Pull
+            if not sharp_path.exists():
+                log(f"Cloning ML-Sharp from {SHARP_REPO_URL}...")
+                result = subprocess.run(
+                    ["git", "clone", SHARP_REPO_URL, SHARP_FOLDER],
+                    cwd=str(self.project_root),
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode != 0:
+                    log(f"Clone failed: {result.stderr}")
+                    return False
+            else:
+                log("Updating ML-Sharp repository...")
+                subprocess.run(["git", "fetch", "origin"], cwd=str(sharp_path), timeout=60)
+                result = subprocess.run(
+                    ["git", "pull", "origin", "main"],
+                    cwd=str(sharp_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode != 0:
+                    log(f"Pull failed: {result.stderr}")
+                    # Continue anyway if pull fails but repo exists
+            
+            # 3. Create Virtual Environment
+            venv_path = sharp_path / ".venv"
+            if not venv_path.exists():
+                log("Creating virtual environment...")
+                # Split python_exe if it's "py -3.13"
+                py_args = python_exe.split()
+                result = subprocess.run(
+                    [*py_args, "-m", "venv", ".venv"],
+                    cwd=str(sharp_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if result.returncode != 0:
+                    log(f"Venv creation failed: {result.stderr}")
+                    return False
+            
+            # 4. Install Dependencies
+            log("Installing dependencies (this may take several minutes, ~2GB download)...")
+            pip_exe = venv_path / "Scripts" / "pip.exe"
+            # Ensure we're using the latest pip
+            subprocess.run([str(pip_exe), "install", "--upgrade", "pip"], cwd=str(sharp_path), timeout=120)
+            
+            # Install ml-sharp in editable mode which handles requirements.txt
+            result = subprocess.run(
+                [str(pip_exe), "install", "-e", "."],
+                cwd=str(sharp_path),
+                capture_output=True,
+                text=True,
+                timeout=600 # 10 minutes
+            )
+            if result.returncode != 0:
+                log(f"Dependency installation failed: {result.stderr}")
+                return False
+            
+            # 5. Pre-download Model Checkpoint (Avoid SSL issues at runtime)
+            checkpoint_dir = Path(os.path.expanduser("~")) / ".cache" / "torch" / "hub" / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = checkpoint_dir / SHARP_CHECKPOINT_NAME
+            
+            if not checkpoint_path.exists():
+                log(f"Downloading model checkpoint (~500MB)...")
+                
+                # Use a specific SSL context to bypass verification if needed (user had issues)
+                import ssl
+                ssl_context = ssl._create_unverified_context()
+                
+                def progress(downloaded, total):
+                    pct = int((downloaded / total) * 100)
+                    if pct % 10 == 0:
+                        log(f"Checkpoint download progress: {pct}%")
+                
+                # We need a modified download_file that accepts an SSL context
+                try:
+                    req = urllib.request.Request(SHARP_CHECKPOINT_URL)
+                    req.add_header('User-Agent', 'AutomaticGaussianSplatter/1.0')
+                    with urllib.request.urlopen(req, timeout=600, context=ssl_context) as response:
+                        total_size = int(response.headers.get('Content-Length', 0))
+                        downloaded = 0
+                        with open(checkpoint_path, 'wb') as f:
+                            while True:
+                                chunk = response.read(8192)
+                                if not chunk: break
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                if total_size: progress(downloaded, total_size)
+                    log("Checkpoint downloaded successfully!")
+                except Exception as e:
+                    log(f"Warning: Failed to pre-download checkpoint: {e}")
+                    log("You might encounter SSL issues when running Sharp for the first time.")
+            
+            # 6. Update version
+            versions = self._load_versions()
+            versions["sharp_commit"] = self._get_local_sharp_commit()
+            self._save_versions(versions)
+            
+            log("ML-Sharp installed and configured successfully!")
+            return True
+            
+        except Exception as e:
+            log(f"ML-Sharp installation failed: {e}")
+            logger.error(f"Sharp install error: {e}", exc_info=True)
             return False
     
     def _update_component(self, name: str, download_url: str, folder: str, 

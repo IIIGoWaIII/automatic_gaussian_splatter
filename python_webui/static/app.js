@@ -128,7 +128,7 @@ function showUpdateModal(updates) {
     updateList.innerHTML = '';
 
     // Separate updates into categories
-    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush');
+    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush' || u.key === 'sharp');
     const appUpdates = updates.filter(u => u.key === 'app');
 
     // Add section header for tools if there are tool updates
