@@ -22,12 +22,9 @@ const projectNameInput = document.getElementById('projectName');
 // Resume Training Elements
 const resumeProject = document.getElementById('resumeProject');
 const resumeCheckpoint = document.getElementById('resumeCheckpoint');
-const resumeTargetSteps = document.getElementById('resumeTargetSteps');
-const resumeViewer = document.getElementById('resumeViewer');
 const resumeTrainingBtn = document.getElementById('resumeTrainingBtn');
 const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
 const resumeForceScratch = document.getElementById('resumeForceScratch'); // New Checkbox
-const resumeShutdown = document.getElementById('resumeShutdown');
 
 // Update Modal Elements
 const updateModal = document.getElementById('updateModal');
@@ -297,10 +294,10 @@ resumeProject.addEventListener('change', () => {
         resumeCheckpoint.appendChild(opt);
     });
 
-    // Auto-select highest checkpoint and set target steps
+    // Auto-select highest checkpoint and set target steps in main Brush settings
     const lastCheckpoint = proj.ply_checkpoints[proj.ply_checkpoints.length - 1];
     resumeCheckpoint.value = lastCheckpoint.iteration;
-    resumeTargetSteps.value = lastCheckpoint.iteration + 5000;
+    brushSteps.value = lastCheckpoint.iteration + 5000;
 });
 
 // Refresh projects button
@@ -310,7 +307,7 @@ refreshProjectsBtn.addEventListener('click', loadProjects);
 resumeTrainingBtn.addEventListener('click', async () => {
     const projIdx = parseInt(resumeProject.value, 10);
     let startIter = parseInt(resumeCheckpoint.value, 10);
-    const targetSteps = parseInt(resumeTargetSteps.value, 10);
+    const targetSteps = parseInt(brushSteps.value, 10);
     const forceScratch = resumeForceScratch.checked;
 
     if (isNaN(projIdx) || !availableProjects[projIdx]) {
@@ -350,8 +347,8 @@ resumeTrainingBtn.addEventListener('click', async () => {
     formData.append('forceScratch', forceScratch);
 
     const brushSettings = {
-        with_viewer: resumeViewer.checked,
-        shutdown_after_training: resumeShutdown.checked,
+        with_viewer: brushViewer.checked,
+        shutdown_after_training: brushShutdown.checked,
         sh_degree: parseInt(brushShDegree.value, 10),
         max_splats: parseInt(brushMaxSplats.value, 10),
         max_resolution: parseInt(brushMaxResolution.value, 10)

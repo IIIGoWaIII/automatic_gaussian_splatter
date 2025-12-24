@@ -136,23 +136,10 @@
                             <option value="">-- Select a project first --</option>
                         </select>
 
-                        <label class="field-label" for="resumeTargetSteps" style="margin-top: 1rem;">Target Total
-                            Steps</label>
-                        <input type="number" id="resumeTargetSteps" class="field-control" value="35000" min="1000"
-                            step="1000">
-                        <p class="settings-hint">How many total steps to train to. Must be greater than the checkpoint
-                            iteration.</p>
-
-                        <div style="display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap;">
-                            <label class="toggle-row" style="flex: 1; min-width: 200px;">
-                                <input type="checkbox" id="resumeViewer" checked>
-                                <span>Launch viewer while training</span>
-                            </label>
-                            <label class="toggle-row" style="flex: 1; min-width: 200px;">
-                                <input type="checkbox" id="resumeShutdown">
-                                <span style="color: var(--accent);">Turn off PC when finished</span>
-                            </label>
-                        </div>
+                        <p class="settings-hint" style="color: var(--accent); font-weight: 500; margin-top: 1rem;">
+                            ℹ️ Note: Target steps, viewer, and shutdown settings are now consolidated in the <b>Brush
+                                Settings</b> card above.
+                        </p>
 
                         <div style="margin-top: 1.5rem; display: flex; gap: 1rem; align-items: center;">
                             <button id="refreshProjectsBtn" class="btn" style="background: rgba(255,255,255,0.1);">↻
