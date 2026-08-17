@@ -1,14 +1,25 @@
+// ==========================================
+// Element refs
+// ==========================================
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
+const dropSummary = document.getElementById('dropSummary');
+const dropSummaryIcon = document.getElementById('dropSummaryIcon');
+const dropSummaryText = document.getElementById('dropSummaryText');
+const dropSummarySub = document.getElementById('dropSummarySub');
+const changeFilesBtn = document.getElementById('changeFilesBtn');
+const uploadCard = document.getElementById('uploadCard');
+
+const multiWorkflow = document.getElementById('workflow-multiple');
+const singleWorkflow = document.getElementById('workflow-single');
+
 const statusDiv = document.getElementById('pipelineStatus');
 const consoleWindow = document.getElementById('consoleWindow');
 const consoleOutput = document.getElementById('consoleOutput');
-const videoSettings = document.getElementById('videoSettings');
-const extractionValueInput = document.getElementById('extractionValue');
-const blurFilter = document.getElementById('blurFilter');
-const valueLabel = document.getElementById('valueLabel');
-const estimatedFramesDiv = document.getElementById('estimatedFrames');
+
 const startUploadBtn = document.getElementById('startUploadBtn');
+const autoSettingsChips = document.getElementById('autoSettingsChips');
+
 const colmapQuality = document.getElementById('colmapQuality');
 const colmapDense = document.getElementById('colmapDense');
 const colmapRemoveDuplicates = document.getElementById('colmapRemoveDuplicates');
@@ -23,18 +34,42 @@ const brushMaxSplats = document.getElementById('brushMaxSplats');
 const brushMaxResolution = document.getElementById('brushMaxResolution');
 const projectNameInput = document.getElementById('projectName');
 
+// Single workflow elements
+const singlePreviewImg = document.getElementById('singlePreviewImg');
+const singlePreviewPlaceholder = document.getElementById('singlePreviewPlaceholder');
+const singleProjectName = document.getElementById('singleProjectName');
+const sharpDevice = document.getElementById('sharpDevice');
+const singlePipelineStatus = document.getElementById('singlePipelineStatus');
+const singleConsoleWindow = document.getElementById('singleConsoleWindow');
+const singleConsoleOutput = document.getElementById('singleConsoleOutput');
+const singleStepProcess = document.getElementById('singleStepProcess');
+const startSingleBtn = document.getElementById('startSingleBtn');
+const singleChangeBtn = document.getElementById('singleChangeBtn');
+const singleFileInput = document.getElementById('singleFileInput');
+
 // Resume Training Elements
 const resumeProject = document.getElementById('resumeProject');
 const resumeCheckpoint = document.getElementById('resumeCheckpoint');
 const resumeTrainingBtn = document.getElementById('resumeTrainingBtn');
 const refreshProjectsBtn = document.getElementById('refreshProjectsBtn');
-const resumeForceScratch = document.getElementById('resumeForceScratch'); // New Checkbox
+const resumeForceScratch = document.getElementById('resumeForceScratch');
+
+// Preview Elements
+const splatList = document.getElementById('splatList');
+const refreshSplatsBtn = document.getElementById('refreshSplatsBtn');
 
 // Update Modal Elements
 const updateModal = document.getElementById('updateModal');
 const updateList = document.getElementById('updateList');
 const updateCancelBtn = document.getElementById('updateCancelBtn');
 const updateConfirmBtn = document.getElementById('updateConfirmBtn');
+
+// Too many images modal
+const imageCountModal = document.getElementById('imageCountModal');
+const imageCountMessage = document.getElementById('imageCountMessage');
+const imageCountEstimate = document.getElementById('imageCountEstimate');
+const useAllImagesBtn = document.getElementById('useAllImagesBtn');
+const useFewerImagesBtn = document.getElementById('useFewerImagesBtn');
 
 // Store available updates
 let pendingUpdates = [];
@@ -48,11 +83,91 @@ const steps = {
     training: document.getElementById('stepTraining')
 };
 
+// ==========================================
 // State
+// ==========================================
 let selectedFiles = [];
 let videoDuration = 0; // seconds
+let autoExtractionFps = 2; // computed from video duration to hit 300-400 frames
+let pendingUpload = null; // { files, sampled }
+let singleImageFile = null;
 
-// Load default settings from backend so the UI mirrors current config
+const TARGET_FRAMES = 350; // 300-400 sweet spot
+const MIN_FPS = 0.5;
+const MAX_FPS = 6;
+const MAX_IMAGE_COUNT = 400;
+
+// ==========================================
+// Scenario presets (based on community best practices)
+// ==========================================
+const SCENARIOS = {
+    object: {
+        label: 'Single Object',
+        matcher: 'exhaustive',
+        quality: 'high',
+        steps: 30000,
+        shDegree: 3,
+        maxSplats: 3000000
+    },
+    indoor: {
+        label: 'Indoor Room',
+        matcher: 'exhaustive',
+        quality: 'high',
+        steps: 50000,
+        shDegree: 3,
+        maxSplats: 5000000
+    },
+    outdoor: {
+        label: 'Outdoor Scene',
+        matcher: 'exhaustive',
+        quality: 'high',
+        steps: 70000,
+        shDegree: 3,
+        maxSplats: 8000000
+    },
+    video: {
+        label: 'Video Walkaround',
+        matcher: 'sequential',
+        quality: 'high',
+        steps: 40000,
+        shDegree: 3,
+        maxSplats: 5000000
+    }
+};
+
+function applyScenario(key) {
+    if (key === 'custom') {
+        autoSettingsChips.innerHTML = '<span class="settings-chip">⚙️ Using your manual Advanced Settings</span>';
+        return;
+    }
+    const preset = SCENARIOS[key];
+    if (!preset) return;
+
+    colmapMatcher.value = preset.matcher;
+    colmapQuality.value = preset.quality;
+    brushSteps.value = preset.steps;
+    brushShDegree.value = preset.shDegree;
+    brushMaxSplats.value = preset.maxSplats;
+
+    const matcherLabel = { exhaustive: 'Exhaustive', sequential: 'Sequential', auto: 'Auto' }[preset.matcher];
+    autoSettingsChips.innerHTML = `
+        <span class="settings-chip">🧭 Matcher: ${matcherLabel}</span>
+        <span class="settings-chip">🎯 Quality: ${preset.quality[0].toUpperCase() + preset.quality.slice(1)}</span>
+        <span class="settings-chip">⏱️ Steps: ${preset.steps.toLocaleString()}</span>
+        <span class="settings-chip">💡 SH degree: ${preset.shDegree}</span>
+        <span class="settings-chip">🌀 Max splats: ${(preset.maxSplats / 1e6)}M</span>
+    `;
+}
+
+document.querySelectorAll('input[name="scenario"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        if (e.target.checked) applyScenario(e.target.value);
+    });
+});
+
+// ==========================================
+// Load default settings from backend
+// ==========================================
 async function loadSettings() {
     try {
         const res = await fetch('/settings');
@@ -79,7 +194,9 @@ async function loadSettings() {
 }
 loadSettings();
 
+// ==========================================
 // Load available projects for resume training
+// ==========================================
 async function loadProjects() {
     try {
         const res = await fetch('/list-outputs');
@@ -87,7 +204,6 @@ async function loadProjects() {
         const data = await res.json();
         availableProjects = data.outputs || [];
 
-        // Populate project dropdown
         resumeProject.innerHTML = '';
         if (availableProjects.length === 0) {
             resumeProject.innerHTML = '<option value="">-- No projects available --</option>';
@@ -110,7 +226,83 @@ async function loadProjects() {
 }
 loadProjects();
 
-// Check for updates on page load
+// ==========================================
+// Preview splats (open finished splats in LichtFeld-Studio)
+// ==========================================
+async function loadSplats() {
+    splatList.innerHTML = '<p class="settings-hint" style="margin-top: 1rem;">Loading...</p>';
+    try {
+        const res = await fetch('/list-splats');
+        if (!res.ok) throw new Error('Failed to load splats');
+        const data = await res.json();
+        const splats = data.splats || [];
+
+        if (splats.length === 0) {
+            splatList.innerHTML = '<div class="splat-empty">No finished splats found yet.<br>Complete a pipeline and the output will show up here.</div>';
+            return;
+        }
+
+        splatList.innerHTML = '';
+        splats.forEach(splat => {
+            const item = document.createElement('div');
+            item.className = 'splat-item';
+            item.dataset.path = splat.path;
+            const ext = splat.filename.split('.').pop().toUpperCase();
+            item.innerHTML = `
+                <div class="splat-item__info">
+                    <span class="splat-item__name">${splat.filename}</span>
+                    <span class="splat-item__meta">${splat.folder} · ${ext} · ${splat.size_mb} MB</span>
+                </div>
+                <button class="btn btn-open-splat">▶ Open in LichtFeld</button>
+            `;
+            splatList.appendChild(item);
+        });
+    } catch (err) {
+        console.warn('Unable to fetch splats', err);
+        splatList.innerHTML = '<div class="splat-empty">Error loading splats.</div>';
+    }
+}
+loadSplats();
+
+splatList.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-open-splat');
+    if (!btn) return;
+    const item = btn.closest('.splat-item');
+    openSplat(item.dataset.path);
+});
+
+async function openSplat(path) {
+    const formData = new FormData();
+    formData.append('path', path);
+    try {
+        const response = await fetch('/preview-splat', { method: 'POST', body: formData });
+        const result = await response.json();
+        if (result.error) {
+            alert(`Failed to open splat: ${result.error}`);
+        }
+    } catch (err) {
+        console.error(err);
+        alert('Error opening splat. Check console.');
+    }
+}
+
+refreshSplatsBtn.addEventListener('click', loadSplats);
+
+// ==========================================
+// Library tabs
+// ==========================================
+document.querySelectorAll('.library-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.library-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.library-tab__panel').forEach(p => p.style.display = 'none');
+        tab.classList.add('active');
+        document.getElementById(`tab-${tab.dataset.tab}`).style.display = 'block';
+    });
+});
+
+// ==========================================
+// Update modal
+// ==========================================
 async function checkForUpdates() {
     try {
         const res = await fetch('/check-updates');
@@ -127,14 +319,11 @@ async function checkForUpdates() {
 }
 
 function showUpdateModal(updates) {
-    // Clear previous content
     updateList.innerHTML = '';
 
-    // Separate updates into categories
     const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush' || u.key === 'sharp' || u.key === 'lichtfeld');
     const appUpdates = updates.filter(u => u.key === 'app');
 
-    // Add section header for tools if there are tool updates
     if (toolUpdates.length > 0) {
         const toolHeader = document.createElement('div');
         toolHeader.className = 'update-section-header';
@@ -157,7 +346,6 @@ function showUpdateModal(updates) {
         });
     }
 
-    // Add section header for app if there are app updates
     if (appUpdates.length > 0) {
         const appHeader = document.createElement('div');
         appHeader.className = 'update-section-header';
@@ -180,13 +368,11 @@ function showUpdateModal(updates) {
         });
     }
 
-    // Show modal
     updateModal.style.display = 'flex';
 }
 
 function hideUpdateModal() {
     updateModal.style.display = 'none';
-    // Reset button states
     updateConfirmBtn.disabled = false;
     updateConfirmBtn.textContent = 'Update Selected';
     updateCancelBtn.style.display = 'inline-block';
@@ -198,7 +384,6 @@ function getSelectedUpdates() {
     return pendingUpdates.filter(u => selectedKeys.includes(u.key));
 }
 
-// Update modal button handlers
 updateCancelBtn.addEventListener('click', hideUpdateModal);
 
 updateConfirmBtn.addEventListener('click', async () => {
@@ -208,12 +393,10 @@ updateConfirmBtn.addEventListener('click', async () => {
         return;
     }
 
-    // Disable buttons and show progress
     updateConfirmBtn.disabled = true;
     updateConfirmBtn.textContent = 'Updating...';
     updateCancelBtn.style.display = 'none';
 
-    // Replace update list with progress indicator
     updateList.innerHTML = `
         <div class="update-progress">
             <span class="spinner"></span>
@@ -221,7 +404,6 @@ updateConfirmBtn.addEventListener('click', async () => {
         </div>
     `;
 
-    // Show console for progress logs
     statusDiv.style.display = 'flex';
     consoleWindow.style.display = 'block';
     consoleOutput.innerHTML = '';
@@ -239,8 +421,6 @@ updateConfirmBtn.addEventListener('click', async () => {
 
         const result = await response.json();
         console.log('Update started:', result);
-
-        // Modal will be closed when we receive completion status via WebSocket
     } catch (err) {
         console.error('Update failed:', err);
         updateList.innerHTML = `
@@ -254,10 +434,11 @@ updateConfirmBtn.addEventListener('click', async () => {
     }
 });
 
-// Check for updates after a short delay to let page load
 setTimeout(checkForUpdates, 1000);
 
-// Handle Force Scratch Checkbox
+// ==========================================
+// Resume Training
+// ==========================================
 resumeForceScratch.addEventListener('change', () => {
     if (resumeForceScratch.checked) {
         resumeCheckpoint.disabled = true;
@@ -265,17 +446,14 @@ resumeForceScratch.addEventListener('change', () => {
         resumeTrainingBtn.textContent = '▶ Start Training (Scratch)';
     } else {
         resumeCheckpoint.disabled = false;
-        // Trigger change to repopulate if project is selected
         resumeProject.dispatchEvent(new Event('change'));
         resumeTrainingBtn.textContent = '▶ Resume Training';
     }
 });
 
-// Handle project selection - populate checkpoints
 resumeProject.addEventListener('change', () => {
     const idx = parseInt(resumeProject.value, 10);
 
-    // If scratch is on, we don't need to populate checkpoints
     if (resumeForceScratch.checked) {
         return;
     }
@@ -300,16 +478,13 @@ resumeProject.addEventListener('change', () => {
         resumeCheckpoint.appendChild(opt);
     });
 
-    // Auto-select highest checkpoint and set target steps in main Brush settings
     const lastCheckpoint = proj.ply_checkpoints[proj.ply_checkpoints.length - 1];
     resumeCheckpoint.value = lastCheckpoint.iteration;
     brushSteps.value = lastCheckpoint.iteration + 5000;
 });
 
-// Refresh projects button
 refreshProjectsBtn.addEventListener('click', loadProjects);
 
-// Resume Training button
 resumeTrainingBtn.addEventListener('click', async () => {
     const projIdx = parseInt(resumeProject.value, 10);
     let startIter = parseInt(resumeCheckpoint.value, 10);
@@ -326,7 +501,6 @@ resumeTrainingBtn.addEventListener('click', async () => {
         return;
     }
 
-    // If scratching, startIter is 0
     if (forceScratch) {
         startIter = 0;
     }
@@ -338,12 +512,10 @@ resumeTrainingBtn.addEventListener('click', async () => {
 
     const proj = availableProjects[projIdx];
 
-    // Show console
     statusDiv.style.display = 'flex';
     consoleWindow.style.display = 'block';
     consoleOutput.innerHTML = '';
 
-    // Mark training step as active
     updateStep('training');
 
     const formData = new FormData();
@@ -378,7 +550,9 @@ resumeTrainingBtn.addEventListener('click', async () => {
     }
 });
 
+// ==========================================
 // WebSocket setup
+// ==========================================
 const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
 
@@ -386,14 +560,12 @@ ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
 
     if (data.type === 'log') {
-        // Output to multi-image console
         const line = document.createElement('div');
         line.className = 'console-line';
         line.textContent = `> ${data.message}`;
         consoleOutput.appendChild(line);
         consoleWindow.scrollTop = consoleWindow.scrollHeight;
 
-        // Also output to single-image console if visible
         if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
             const singleLine = document.createElement('div');
             singleLine.className = 'console-line';
@@ -402,19 +574,16 @@ ws.onmessage = (event) => {
             singleConsoleWindow.scrollTop = singleConsoleWindow.scrollHeight;
         }
 
-        // Simple heuristic to update steps based on logs
         if (data.message.includes('Step 1')) updateStep('stacking');
         if (data.message.includes('COLMAP') || data.message.includes('Step 2')) updateStep('tracking');
         if (data.message.includes('Brush') || data.message.includes('Step 3')) updateStep('training');
 
-        // Single workflow step update
         if (data.message.includes('SHARP')) {
             singleStepProcess.classList.add('active');
         }
     }
 
     if (data.type === 'status') {
-        // Handle update completion
         if (data.task_id === 'update') {
             if (data.status === 'completed' || data.status === 'partial') {
                 hideUpdateModal();
@@ -431,15 +600,14 @@ ws.onmessage = (event) => {
         }
 
         if (data.status === 'completed') {
-            // Multi-image workflow
             const line = document.createElement('div');
             line.className = 'console-line';
             line.style.color = 'var(--success)';
             line.textContent = 'DONE! Output available in processing_output folder.';
             consoleOutput.appendChild(line);
             markAllCompleted();
+            loadSplats();
 
-            // Single image workflow
             if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
                 const singleLine = document.createElement('div');
                 singleLine.className = 'console-line';
@@ -456,7 +624,6 @@ ws.onmessage = (event) => {
             line.textContent = 'FAILED! See logs above.';
             consoleOutput.appendChild(line);
 
-            // Single image workflow
             if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
                 const singleLine = document.createElement('div');
                 singleLine.className = 'console-line';
@@ -469,7 +636,6 @@ ws.onmessage = (event) => {
 };
 
 function updateStep(activeStep) {
-    // Reset all
     Object.values(steps).forEach(el => {
         el.classList.remove('active');
         el.classList.remove('completed');
@@ -494,74 +660,128 @@ function markAllCompleted() {
     });
 }
 
-// Video Settings Logic
-document.querySelectorAll('input[name="extractionMode"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        if (e.target.value === 'fps') {
-            valueLabel.textContent = 'Frames per Second';
-            extractionValueInput.value = '2';
-            extractionValueInput.step = '0.1';
-        } else {
-            valueLabel.textContent = 'Total Frame Count';
-            extractionValueInput.value = '100';
-            extractionValueInput.step = '1';
-        }
-        calculateEstimatedFrames();
-    });
-});
+// ==========================================
+// File handling & workflow auto-detection
+// ==========================================
+function isVideoFile(file) {
+    return file.type.startsWith('video/') ||
+        /\.(mp4|mov|avi)$/i.test(file.name);
+}
 
-extractionValueInput.addEventListener('input', calculateEstimatedFrames);
+function isImageFile(file) {
+    return file.type.startsWith('image/');
+}
 
-function calculateEstimatedFrames() {
-    const mode = document.querySelector('input[name="extractionMode"]:checked').value;
-    const val = parseFloat(extractionValueInput.value);
+function handleFileSelection(files) {
+    const allFiles = Array.from(files);
+    if (allFiles.length === 0) return;
 
-    if (isNaN(val) || val <= 0) {
-        estimatedFramesDiv.textContent = '-';
+    // Split into images and videos
+    const videos = allFiles.filter(isVideoFile);
+    const images = allFiles.filter(isImageFile);
+
+    // Single image -> Sharp workflow
+    if (images.length === 1 && videos.length === 0) {
+        setupSingleWorkflow(images[0]);
         return;
     }
 
-    if (mode === 'count') {
-        estimatedFramesDiv.textContent = `~ ${Math.round(val)} frames`;
+    // Mixed selection: keep only images, warn about videos
+    if (videos.length > 0 && images.length > 0) {
+        alert('Videos and images cannot be mixed. Only the images will be processed.');
+    }
+
+    // Single video or multiple images -> full pipeline
+    setupMultiWorkflow(videos, images);
+}
+
+function setupMultiWorkflow(videos, images) {
+    singleWorkflow.style.display = 'none';
+    multiWorkflow.style.display = 'block';
+    selectedFiles = images.length > 0 ? images : videos;
+
+    // Auto-select scenario
+    const scenarioRadio = videos.length > 0
+        ? document.querySelector('input[name="scenario"][value="video"]')
+        : document.querySelector('input[name="scenario"][value="object"]');
+    scenarioRadio.checked = true;
+    applyScenario(scenarioRadio.value);
+
+    // Drop zone -> summary
+    dropZone.style.display = 'none';
+    dropSummary.style.display = 'flex';
+
+    if (videos.length > 0) {
+        const video = videos[0];
+        dropSummaryIcon.textContent = '🎬';
+        dropSummaryText.textContent = video.name;
+
+        videoDuration = 0;
+        const vidEl = document.createElement('video');
+        vidEl.preload = 'metadata';
+        vidEl.onloadedmetadata = function () {
+            window.URL.revokeObjectURL(vidEl.src);
+            videoDuration = vidEl.duration;
+            autoExtractionFps = computeAutoFps(videoDuration);
+            const frames = Math.round(videoDuration * autoExtractionFps);
+            const warn = frames < 100 ? ' ⚠️ Short video — fewer frames means lower quality.' : '';
+            dropSummarySub.textContent = `Video detected — will extract ~${frames} sharp frames for best tracking quality.${warn}`;
+        };
+        vidEl.src = URL.createObjectURL(video);
     } else {
-        if (!videoDuration) {
-            estimatedFramesDiv.textContent = 'Loading video...';
-        } else {
-            const total = Math.round(videoDuration * val);
-            estimatedFramesDiv.textContent = `~ ${total} frames`;
+        const count = images.length;
+        dropSummaryIcon.textContent = '📷';
+        dropSummaryText.textContent = `${count} images`;
+        dropSummarySub.textContent = 'Images detected — full scene reconstruction.';
+
+        if (count > MAX_IMAGE_COUNT) {
+            showImageCountModal(count);
         }
     }
 }
 
-// File Handling
-function handleFileSelection(files) {
-    selectedFiles = Array.from(files);
-
-    if (selectedFiles.length === 0) return;
-
-    const isVideo = selectedFiles.length === 1 && selectedFiles[0].type.startsWith('video/');
-
-    if (isVideo) {
-        // Show Video Settings
-        dropZone.style.display = 'none';
-        videoSettings.style.display = 'block';
-
-        // Get duration
-        const video = document.createElement('video');
-        video.preload = 'metadata';
-        video.onloadedmetadata = function () {
-            window.URL.revokeObjectURL(video.src);
-            videoDuration = video.duration;
-            calculateEstimatedFrames();
-        }
-        video.src = URL.createObjectURL(selectedFiles[0]);
-
-    } else {
-        // Images - Upload Immediately
-        startUpload();
-    }
+function computeAutoFps(duration) {
+    let fps = TARGET_FRAMES / duration;
+    fps = Math.max(MIN_FPS, Math.min(MAX_FPS, fps));
+    return Math.round(fps * 10) / 10;
 }
 
+// Too many images modal
+function showImageCountModal(count) {
+    imageCountMessage.textContent =
+        `You selected ${count.toLocaleString()} images. More than ~400 makes camera tracking dramatically slower (matching time grows quadratically).`;
+
+    const ratio = count / MAX_IMAGE_COUNT;
+    const hours = Math.round(ratio * ratio * 1.5 * 10) / 10;
+    imageCountEstimate.innerHTML =
+        `<b>~400 images:</b> roughly 1–2 hours total<br>` +
+        `<b>All ${count.toLocaleString()} images:</b> roughly ${hours}–${Math.round(hours * 2)} hours, but with full coverage and max detail`;
+
+    imageCountModal.style.display = 'flex';
+}
+
+function hideImageCountModal() {
+    imageCountModal.style.display = 'none';
+}
+
+useAllImagesBtn.addEventListener('click', () => {
+    hideImageCountModal();
+    startUpload();
+});
+
+useFewerImagesBtn.addEventListener('click', () => {
+    hideImageCountModal();
+    const step = Math.max(1, Math.ceil(selectedFiles.length / MAX_IMAGE_COUNT));
+    const sampled = selectedFiles.filter((_, i) => i % step === 0);
+    const originalCount = selectedFiles.length;
+    selectedFiles = sampled;
+    dropSummarySub.textContent = `Reduced from ${originalCount.toLocaleString()} to ${sampled.length.toLocaleString()} images (evenly sampled for speed).`;
+    startUpload();
+});
+
+// ==========================================
+// Multi workflow upload
+// ==========================================
 startUploadBtn.addEventListener('click', startUpload);
 
 async function startUpload() {
@@ -570,9 +790,11 @@ async function startUpload() {
         return;
     }
 
+    const isVideo = isVideoFile(selectedFiles[0]);
+
     // UI Updates
-    dropZone.style.display = 'none';
-    videoSettings.style.display = 'none';
+    uploadCard.style.display = 'none';
+    multiWorkflow.style.display = 'none';
     statusDiv.style.display = 'flex';
     consoleWindow.style.display = 'block';
 
@@ -581,20 +803,17 @@ async function startUpload() {
         formData.append('files', file);
     });
 
-    // Add video settings
-    const mode = document.querySelector('input[name="extractionMode"]:checked').value;
-    const val = extractionValueInput.value;
-    formData.append('extractionMode', mode);
-    formData.append('extractionValue', val);
-    formData.append('blurFilter', blurFilter.checked ? 'true' : 'false');
+    if (isVideo) {
+        formData.append('extractionMode', 'fps');
+        formData.append('extractionValue', autoExtractionFps);
+        formData.append('blurFilter', 'true');
+    }
 
-    // Add project name if provided
     const projectName = projectNameInput.value.trim();
     if (projectName) {
         formData.append('projectName', projectName);
     }
 
-    // Add COLMAP + Brush settings
     const colmapSettings = {
         engine: colmapEngine.value,
         matcher: colmapMatcher.value,
@@ -632,59 +851,44 @@ async function startUpload() {
     }
 }
 
-// Drag and Drop
-dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('dragover');
-});
-
-dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('dragover');
-});
-
-dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files.length) {
-        handleFileSelection(e.dataTransfer.files);
-    }
-});
-
-fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length) {
-        handleFileSelection(e.target.files);
-    }
-});
-
 // ==========================================
-// SINGLE IMAGE WORKFLOW (Sharp)
+// Single image workflow
 // ==========================================
+function setupSingleWorkflow(file) {
+    multiWorkflow.style.display = 'none';
+    singleWorkflow.style.display = 'block';
+    singleImageFile = file;
 
-const singleDropZone = document.getElementById('singleDropZone');
-const singleFileInput = document.getElementById('singleFileInput');
-const singleProjectName = document.getElementById('singleProjectName');
-const sharpDevice = document.getElementById('sharpDevice');
-const singlePipelineStatus = document.getElementById('singlePipelineStatus');
-const singleConsoleWindow = document.getElementById('singleConsoleWindow');
-const singleConsoleOutput = document.getElementById('singleConsoleOutput');
-const singleStepProcess = document.getElementById('singleStepProcess');
+    dropZone.style.display = 'none';
+    dropSummary.style.display = 'none';
 
-// Handle single image selection
-function handleSingleImageSelection(files) {
-    if (files.length === 0) return;
-
-    const file = files[0];
-    if (!file.type.startsWith('image/')) {
-        alert('Please select an image file (JPG, PNG, or WEBP)');
-        return;
-    }
-
-    startSingleUpload(file);
+    // Preview thumbnail
+    singlePreviewPlaceholder.style.display = 'none';
+    singlePreviewImg.style.display = 'block';
+    singlePreviewImg.src = URL.createObjectURL(file);
 }
 
+singleChangeBtn.addEventListener('click', () => {
+    singleWorkflow.style.display = 'none';
+    dropZone.style.display = 'block';
+    dropSummary.style.display = 'none';
+    singleImageFile = null;
+    singlePreviewImg.src = '';
+    singlePreviewImg.style.display = 'none';
+    singlePreviewPlaceholder.style.display = 'flex';
+});
+
+startSingleBtn.addEventListener('click', () => {
+    if (!singleImageFile) {
+        alert('Select an image first.');
+        return;
+    }
+    startSingleUpload(singleImageFile);
+});
+
 async function startSingleUpload(file) {
-    // Show console
-    singleDropZone.style.display = 'none';
+    singleWorkflow.style.display = 'none';
+    uploadCard.style.display = 'none';
     singlePipelineStatus.style.display = 'flex';
     singleConsoleWindow.style.display = 'block';
     singleConsoleOutput.innerHTML = '';
@@ -718,32 +922,46 @@ async function startSingleUpload(file) {
 }
 
 function resetSingleWorkflow() {
-    singleDropZone.style.display = 'block';
+    uploadCard.style.display = 'block';
+    dropZone.style.display = 'block';
+    singleWorkflow.style.display = 'none';
     singlePipelineStatus.style.display = 'none';
     singleConsoleWindow.style.display = 'none';
     singleStepProcess.classList.remove('active', 'completed');
 }
 
-// Drag and Drop for Single Image
-singleDropZone.addEventListener('dragover', (e) => {
+// ==========================================
+// Drag and drop
+// ==========================================
+dropZone.addEventListener('dragover', (e) => {
     e.preventDefault();
-    singleDropZone.classList.add('dragover');
+    dropZone.classList.add('dragover');
 });
 
-singleDropZone.addEventListener('dragleave', () => {
-    singleDropZone.classList.remove('dragover');
+dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('dragover');
 });
 
-singleDropZone.addEventListener('drop', (e) => {
+dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
-    singleDropZone.classList.remove('dragover');
+    dropZone.classList.remove('dragover');
     if (e.dataTransfer.files.length) {
-        handleSingleImageSelection(e.dataTransfer.files);
+        handleFileSelection(e.dataTransfer.files);
     }
 });
 
-singleFileInput.addEventListener('change', (e) => {
+fileInput.addEventListener('change', (e) => {
     if (e.target.files.length) {
-        handleSingleImageSelection(e.target.files);
+        handleFileSelection(e.target.files);
     }
+});
+
+changeFilesBtn.addEventListener('click', () => {
+    multiWorkflow.style.display = 'none';
+    singleWorkflow.style.display = 'none';
+    dropZone.style.display = 'block';
+    dropSummary.style.display = 'none';
+    selectedFiles = [];
+    singleImageFile = null;
+    fileInput.value = '';
 });

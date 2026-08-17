@@ -6,6 +6,7 @@ import shutil
 import uuid
 import json
 import asyncio
+import subprocess
 from pathlib import Path
 from utils import logger, ensure_directory, get_project_root
 from pipeline_manager import PipelineManager
@@ -250,6 +251,62 @@ async def list_outputs():
     except Exception as e:
         logger.error(f"Failed to list outputs: {e}")
         return {"error": str(e), "outputs": []}
+
+def find_lichtfeld_exe():
+    """Dynamically locate the LichtFeld-Studio executable (folder name changes on update)."""
+    repo_root = BASE_DIR.parent
+    for exe in repo_root.glob("LichtFeld-Studio*/bin/LichtFeld-Studio.exe"):
+        return exe
+    return None
+
+@app.get("/list-splats")
+async def list_splats():
+    """List all finished splat files (.ply/.resume) available for viewing."""
+    try:
+        splats = []
+        if OUTPUT_DIR.exists():
+            for folder in sorted(OUTPUT_DIR.iterdir()):
+                if not folder.is_dir():
+                    continue
+                files = []
+                for pattern in ("*.ply", "*.resume"):
+                    files.extend(folder.rglob(pattern))
+                for f in sorted(files):
+                    try:
+                        rel = f.relative_to(OUTPUT_DIR)
+                        splats.append({
+                            "folder": folder.name,
+                            "path": str(rel),
+                            "filename": f.name,
+                            "size_mb": round(f.stat().st_size / 1e6, 1)
+                        })
+                    except Exception:
+                        continue
+        logger.info(f"List splats called. Found {len(splats)} viewable splats.")
+        return {"splats": splats}
+    except Exception as e:
+        logger.error(f"Failed to list splats: {e}")
+        return {"error": str(e), "splats": []}
+
+@app.post("/preview-splat")
+async def preview_splat(path: str = Form(...)):
+    """Open a finished splat file in LichtFeld-Studio for viewing (no training)."""
+    try:
+        resolved = (OUTPUT_DIR / path).resolve()
+        output_resolved = OUTPUT_DIR.resolve()
+        if not resolved.is_relative_to(output_resolved) or not resolved.is_file():
+            return {"error": "Invalid splat path"}
+
+        lf_exe = find_lichtfeld_exe()
+        if not lf_exe:
+            return {"error": "LichtFeld-Studio not found. Install it first."}
+
+        subprocess.Popen([str(lf_exe), f"--view={resolved}"], cwd=str(lf_exe.parent))
+        logger.info(f"Opening splat in LichtFeld-Studio: {resolved}")
+        return {"status": "ok", "message": "Opening in LichtFeld-Studio..."}
+    except Exception as e:
+        logger.error(f"Failed to open splat in LichtFeld-Studio: {e}")
+        return {"error": str(e)}
 
 @app.post("/resume")
 async def resume_training(

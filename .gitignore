@@ -10,3 +10,5 @@ __pycache__/
 target/
 versions.json
 ml-sharp/
+LichtFeld-Studio-windows-nightly*/
+
