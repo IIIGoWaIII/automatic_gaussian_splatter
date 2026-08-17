@@ -319,7 +319,7 @@ class UpdateManager:
         # Check Main App
         latest_commit = self._get_latest_app_commit()
         if latest_commit:
-            local_commit = local_versions.get("app_commit", "")
+            local_commit = self._get_local_git_commit()
             if latest_commit and latest_commit != local_commit:
                 updates.append({
                     "name": "Gaussian Splatter App",
