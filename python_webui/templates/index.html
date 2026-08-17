@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gaussian Splat Automation</title>
-    <link rel="stylesheet" href="/static/style.css?v=3">
+    <link rel="stylesheet" href="/static/style.css?v=4">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -244,8 +244,11 @@
             </div>
         </div>
 
-        <!-- Library: Resume + Preview -->
-        <div class="glass-card library">
+        <!-- Library: Resume + Preview (hidden until requested) -->
+        <div class="library-toggle-wrap">
+            <button id="libraryToggleBtn" class="btn btn-cancel">📚 Previous Projects</button>
+        </div>
+        <div class="glass-card library" style="display: none;">
             <div class="library-tabs">
                 <button class="library-tab active" data-tab="resume">🔄 Continue Training</button>
                 <button class="library-tab" data-tab="preview">👁️ Preview Splats</button>
@@ -304,9 +307,25 @@
             <div id="stepTraining" class="step" title="Splat Training">3</div>
         </div>
 
-        <!-- Console Output -->
-        <div id="consoleWindow" class="console-window">
-            <div id="consoleOutput"></div>
+        <!-- Pipeline Progress -->
+        <div id="pipelineProgress" class="progress-card">
+            <div class="progress-top">
+                <span id="progressNote" class="progress-note">Preparing...</span>
+                <span id="progressPercent" class="progress-percent">0%</span>
+            </div>
+            <div class="progress-track">
+                <div id="progressFill" class="progress-fill"></div>
+            </div>
+            <div class="progress-meta">
+                <span id="progressEta" class="progress-eta">Estimating time left...</span>
+                <span class="progress-hint">Estimate refines as stages complete</span>
+            </div>
+            <details id="advancedInfo" class="advanced-info">
+                <summary>⚙️ Advanced info</summary>
+                <div id="consoleWindow" class="console-window">
+                    <div id="consoleOutput"></div>
+                </div>
+            </details>
         </div>
 
         <!-- Single Pipeline Status -->
@@ -320,7 +339,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=5"></script>
 </body>
 
 </html>

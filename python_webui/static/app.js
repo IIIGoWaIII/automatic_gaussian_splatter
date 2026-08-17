@@ -58,6 +58,18 @@ const resumeForceScratch = document.getElementById('resumeForceScratch');
 const splatList = document.getElementById('splatList');
 const refreshSplatsBtn = document.getElementById('refreshSplatsBtn');
 
+// Library toggle Elements
+const libraryToggleBtn = document.getElementById('libraryToggleBtn');
+const libraryCard = document.querySelector('.library');
+
+// Pipeline progress Elements
+const pipelineProgress = document.getElementById('pipelineProgress');
+const progressNote = document.getElementById('progressNote');
+const progressFill = document.getElementById('progressFill');
+const progressPercent = document.getElementById('progressPercent');
+const progressEta = document.getElementById('progressEta');
+const advancedInfo = document.getElementById('advancedInfo');
+
 // Update Modal Elements
 const updateModal = document.getElementById('updateModal');
 const updateList = document.getElementById('updateList');
@@ -301,6 +313,19 @@ document.querySelectorAll('.library-tab').forEach(tab => {
 });
 
 // ==========================================
+// Library toggle (show/hide on demand)
+// ==========================================
+libraryToggleBtn.addEventListener('click', () => {
+    const hidden = libraryCard.style.display === 'none';
+    libraryCard.style.display = hidden ? 'block' : 'none';
+    libraryToggleBtn.textContent = hidden ? '✖ Hide Previous Projects' : '📚 Previous Projects';
+    if (hidden) {
+        loadProjects();
+        loadSplats();
+    }
+});
+
+// ==========================================
 // Update modal
 // ==========================================
 async function checkForUpdates() {
@@ -405,7 +430,11 @@ updateConfirmBtn.addEventListener('click', async () => {
     `;
 
     statusDiv.style.display = 'flex';
-    consoleWindow.style.display = 'block';
+    pipelineProgress.style.display = 'block';
+    advancedInfo.open = true;
+    progressNote.textContent = 'Installing updates...';
+    progressFill.style.width = '0%';
+    progressEta.textContent = '';
     consoleOutput.innerHTML = '';
 
     try {
@@ -513,8 +542,8 @@ resumeTrainingBtn.addEventListener('click', async () => {
     const proj = availableProjects[projIdx];
 
     statusDiv.style.display = 'flex';
-    consoleWindow.style.display = 'block';
     consoleOutput.innerHTML = '';
+    initProgress({ resume: true, startIter, targetSteps });
 
     updateStep('training');
 
@@ -551,6 +580,235 @@ resumeTrainingBtn.addEventListener('click', async () => {
 });
 
 // ==========================================
+// Pipeline progress & ETA estimation
+// ==========================================
+const STAGE_NOTES = ['Preparing inputs...', 'Searching camera placements...', 'Training splats...'];
+
+const progress = {
+    active: false,
+    stageIndex: 0,        // 0 = preprocess, 1 = tracking, 2 = training
+    stageStart: 0,
+    estimates: [0, 0, 0], // estimated seconds per stage
+    actuals: [0, 0, 0],   // measured seconds per completed stage
+    total: 0,
+    correction: 1,        // scales remaining estimates after a stage completes
+    training: null,       // { current, total, tps, time } when step progress is parsed
+    preprocessPct: null   // direct % from "Copied X/Y images (Z%)" logs
+};
+
+let progressTimer = null;
+
+function formatEta(sec) {
+    if (!isFinite(sec) || sec <= 0) return 'Estimating...';
+    if (sec < 60) return `~${Math.max(1, Math.round(sec))}s left`;
+    if (sec < 3600) return `~${Math.round(sec / 60)} min left`;
+    return `~${(sec / 3600).toFixed(1)} hrs left`;
+}
+
+function initProgress(opts = {}) {
+    let n;
+    let isVideo = false;
+    if (!opts.resume) {
+        isVideo = selectedFiles.length > 0 && isVideoFile(selectedFiles[0]);
+        if (isVideo) {
+            const duration = videoDuration > 0 ? videoDuration : 60;
+            n = Math.max(10, Math.round(duration * (autoExtractionFps || 2)));
+        } else {
+            n = Math.max(2, selectedFiles.length);
+        }
+    }
+
+    const steps = opts.resume
+        ? Math.max(1, (opts.targetSteps || 30000) - (opts.startIter || 0))
+        : (parseInt(brushSteps.value, 10) || 30000);
+
+    const quality = colmapQuality ? colmapQuality.value : 'high';
+    const matcher = colmapMatcher ? colmapMatcher.value : 'auto';
+    const engine = colmapEngine ? colmapEngine.value : 'glomap';
+
+    const fePerImage = { low: 0.8, medium: 1.6, high: 2.6 }[quality] || 2.6;
+    const pairs = (n * (n - 1)) / 2;
+    const pairTime = (matcher === 'sequential' ? 0.01 : 0.03) * (quality === 'high' ? 1 : 0.6);
+    const mapTime = engine === 'glomap' ? 150 : 420;
+    const dupTime = (colmapRemoveDuplicates && colmapRemoveDuplicates.checked) ? n * 0.05 : 0;
+
+    const preprocess = isVideo ? 60 + (videoDuration > 0 ? videoDuration : 60) * 6 : 20 + n * 0.15 + dupTime;
+    const tracking = 45 + n * fePerImage + pairs * pairTime + mapTime;
+    const training = steps * 0.035 + 90;
+
+    Object.assign(progress, {
+        active: true,
+        stageIndex: opts.resume ? 2 : 0,
+        stageStart: Date.now(),
+        estimates: opts.resume ? [0, 0, training] : [preprocess, tracking, training],
+        actuals: [0, 0, 0],
+        total: opts.resume ? training : preprocess + tracking + training,
+        correction: 1,
+        training: null,
+        preprocessPct: null
+    });
+
+    pipelineProgress.style.display = 'block';
+    advancedInfo.open = false;
+    progressFill.classList.remove('done', 'failed');
+    progressFill.style.width = '0%';
+    progressPercent.textContent = '0%';
+    progressNote.textContent = opts.resume ? 'Training splats...' : 'Preparing inputs...';
+    progressEta.textContent = formatEta(progress.total);
+
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = setInterval(tickProgress, 1000);
+}
+
+function enterStage(stage) {
+    if (!progress.active || stage <= progress.stageIndex) return;
+
+    const now = Date.now();
+    progress.actuals[progress.stageIndex] = (now - progress.stageStart) / 1000;
+
+    let estDone = 0, actDone = 0;
+    for (let i = 0; i <= progress.stageIndex; i++) {
+        estDone += progress.estimates[i];
+        actDone += progress.actuals[i];
+    }
+    progress.correction = estDone > 0 ? Math.min(3, Math.max(0.3, actDone / estDone)) : 1;
+
+    progress.stageIndex = stage;
+    progress.stageStart = now;
+    progress.preprocessPct = null;
+    if (stage === 2) progress.training = null;
+    progressNote.textContent = STAGE_NOTES[stage];
+}
+
+function detectStage(msg) {
+    const m = msg.toLowerCase();
+    if (m.includes('step 1') || m.includes('extracting frames') || m.includes('organizing') || m.includes('copied')) return 0;
+    if (m.includes('step 2') || m.includes('colmap') || m.includes('feature extraction') || m.includes('matching') || m.includes('calibrat') || m.includes('mapper')) return 1;
+    if (m.includes('step 3') || m.includes('brush') || m.includes('lichtfeld') || m.includes('training') || m.includes('resuming') || m.includes('scratch')) return 2;
+    return -1;
+}
+
+function noteForLog(msg) {
+    const m = msg.toLowerCase();
+    if (m.includes('copied')) return null;
+    if (m.includes('extracting frames')) return 'Extracting sharp frames...';
+    if (m.includes('organizing')) return 'Organizing images...';
+    if (m.includes('duplicate')) return 'Checking for duplicate images...';
+    if (m.includes('feature extraction')) return 'Extracting image features...';
+    if (m.includes('matching')) return 'Matching image features...';
+    if (m.includes('calibrat')) return 'Calibrating cameras...';
+    if (m.includes('mapper') || m.includes('colmap')) return 'Searching camera placements...';
+    if (m.includes('dense')) return 'Building dense reconstruction...';
+    if (m.includes('brush') || m.includes('lichtfeld') || m.includes('resuming') || m.includes('scratch')) return 'Training splats...';
+    return null;
+}
+
+function onTrainingStep(current, total) {
+    const now = Date.now();
+    const prev = progress.training;
+    let tps = prev ? prev.tps : null;
+    if (prev && prev.current < current) {
+        const dt = (now - prev.time) / 1000;
+        const dCur = current - prev.current;
+        if (dt > 0.5 && dCur > 0) {
+            const instant = dt / dCur;
+            tps = tps ? (tps + instant) / 2 : instant;
+        }
+    }
+    progress.training = { current, total, tps: tps || 0.035, time: now };
+    progressNote.textContent = `Training splats... Step ${current.toLocaleString()}/${total.toLocaleString()}`;
+}
+
+function tickProgress() {
+    if (!progress.active) return;
+
+    const est = progress.estimates;
+    const elapsed = (Date.now() - progress.stageStart) / 1000;
+    const overrun = Math.max(0, elapsed - est[progress.stageIndex]);
+
+    let doneSec = 0;
+    for (let i = 0; i < progress.stageIndex; i++) doneSec += progress.actuals[i];
+
+    let pct, eta;
+
+    if (progress.stageIndex === 2 && progress.training && progress.training.total > 0) {
+        const t = progress.training;
+        doneSec += (t.current / t.total) * est[2];
+        pct = Math.min(0.98, doneSec / Math.max(progress.total, 1));
+        eta = Math.max(0, (t.total - t.current) * (t.tps || 0.035));
+        progressNote.textContent = `Training splats... Step ${t.current.toLocaleString()}/${t.total.toLocaleString()}`;
+    } else if (progress.stageIndex === 0 && progress.preprocessPct !== null) {
+        doneSec += (progress.preprocessPct / 100) * est[0];
+        pct = Math.min(0.98, doneSec / Math.max(progress.total, 1));
+        let remaining = est[1] + est[2];
+        remaining = Math.max(0, remaining - overrun) * progress.correction;
+        eta = remaining;
+    } else {
+        const frac = Math.min(elapsed / Math.max(est[progress.stageIndex], 1), 0.95);
+        doneSec += frac * est[progress.stageIndex];
+        pct = Math.min(0.98, doneSec / Math.max(progress.total, 1));
+        let remaining = 0;
+        for (let i = progress.stageIndex; i < 3; i++) remaining += est[i];
+        remaining = Math.max(0, remaining - overrun) * progress.correction;
+        eta = remaining;
+    }
+
+    progressFill.style.width = (pct * 100).toFixed(1) + '%';
+    progressPercent.textContent = Math.round(pct * 100) + '%';
+    progressEta.textContent = formatEta(eta);
+}
+
+function handleProgressLog(msg) {
+    if (!progress.active) return;
+
+    const stage = detectStage(msg);
+    if (stage > progress.stageIndex) enterStage(stage);
+
+    const copyMatch = msg.match(/Copied\s+(\d+)\/(\d+)\s+images\s*\((\d+)%\)/i);
+    if (copyMatch && progress.stageIndex === 0) {
+        progress.preprocessPct = parseInt(copyMatch[3], 10);
+        progressNote.textContent = `Copying images (${copyMatch[3]}%)...`;
+        tickProgress();
+        return;
+    }
+
+    const stepMatch = msg.match(/(?:step|iteration)\D{0,40}?(\d{1,7})\s*\/\s*(\d{1,7})/i)
+        || (/\bstep\b/i.test(msg) && msg.match(/(\d{1,7})\s*\/\s*(\d{1,7})/));
+    if (stepMatch && progress.stageIndex === 2) {
+        const cur = parseInt(stepMatch[1], 10);
+        const tot = parseInt(stepMatch[2], 10);
+        if (tot > 0 && cur <= tot) {
+            onTrainingStep(cur, tot);
+            tickProgress();
+            return;
+        }
+    }
+
+    const note = noteForLog(msg);
+    if (note) progressNote.textContent = note;
+    tickProgress();
+}
+
+function stopProgress(state) {
+    if (!progress.active) return;
+    progress.active = false;
+    if (progressTimer) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+    }
+    progressFill.style.width = '100%';
+    progressFill.classList.add(state);
+    if (state === 'done') {
+        progressPercent.textContent = '100%';
+        progressNote.textContent = 'Done! Splat saved to processing_output.';
+    } else {
+        progressPercent.textContent = '—';
+        progressNote.textContent = 'Failed — open Advanced info for details.';
+    }
+    progressEta.textContent = '';
+}
+
+// ==========================================
 // WebSocket setup
 // ==========================================
 const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -565,6 +823,8 @@ ws.onmessage = (event) => {
         line.textContent = `> ${data.message}`;
         consoleOutput.appendChild(line);
         consoleWindow.scrollTop = consoleWindow.scrollHeight;
+
+        handleProgressLog(data.message);
 
         if (singleConsoleWindow && singleConsoleWindow.style.display !== 'none') {
             const singleLine = document.createElement('div');
@@ -600,6 +860,7 @@ ws.onmessage = (event) => {
         }
 
         if (data.status === 'completed') {
+            stopProgress('done');
             const line = document.createElement('div');
             line.className = 'console-line';
             line.style.color = 'var(--success)';
@@ -618,6 +879,7 @@ ws.onmessage = (event) => {
                 singleStepProcess.classList.add('completed');
             }
         } else if (data.status === 'failed') {
+            stopProgress('failed');
             const line = document.createElement('div');
             line.className = 'console-line';
             line.style.color = 'var(--error)';
@@ -796,7 +1058,8 @@ async function startUpload() {
     uploadCard.style.display = 'none';
     multiWorkflow.style.display = 'none';
     statusDiv.style.display = 'flex';
-    consoleWindow.style.display = 'block';
+    consoleOutput.innerHTML = '';
+    initProgress();
 
     const formData = new FormData();
     selectedFiles.forEach(file => {

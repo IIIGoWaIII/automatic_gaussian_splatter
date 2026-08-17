@@ -1006,6 +1006,109 @@ h1 {
     color: var(--text-primary);
 }
 
+/* Library toggle */
+.library-toggle-wrap {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 2rem;
+}
+
+/* Pipeline progress card */
+.progress-card {
+    display: none;
+    margin-bottom: 2rem;
+}
+
+.progress-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.progress-note {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.progress-percent {
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--accent-primary);
+}
+
+.progress-track {
+    height: 0.75rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent-secondary), var(--accent-primary));
+    box-shadow: 0 0 12px var(--accent-glow);
+    transition: width 0.4s ease;
+}
+
+.progress-fill.done {
+    background: var(--success);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+}
+
+.progress-fill.failed {
+    background: var(--error);
+    box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
+}
+
+.progress-meta {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+/* Advanced info toggle (console lives inside) */
+.advanced-info {
+    margin-top: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    background: rgba(255, 255, 255, 0.03);
+    overflow: hidden;
+}
+
+.advanced-info summary {
+    cursor: pointer;
+    padding: 0.85rem 1.25rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    list-style: none;
+    user-select: none;
+}
+
+.advanced-info summary::-webkit-details-marker {
+    display: none;
+}
+
+.advanced-info[open] summary {
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-primary);
+}
+
+.advanced-info .console-window {
+    display: block;
+    height: 300px;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .resume-grid {
