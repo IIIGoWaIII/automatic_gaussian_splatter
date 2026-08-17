@@ -34,7 +34,7 @@
 
     <div class="container">
         <header>
-            <h1>COLMAP + Brush Splatter</h1>
+            <h1>COLMAP + 3DGS Splatter</h1>
             <p style="color: var(--text-secondary);">Automated Gaussian Splatting Pipeline</p>
         </header>
 
@@ -54,6 +54,17 @@
                                 <p class="settings-subtitle">Camera tracking</p>
                             </div>
                         </div>
+                        <label class="field-label" for="colmapEngine">Reconstruction engine</label>
+                        <select id="colmapEngine" class="field-control">
+                            <option value="glomap" selected>GLOMAP (fast, recommended)</option>
+                            <option value="incremental">COLMAP Incremental (classic, slow)</option>
+                        </select>
+                        <label class="field-label" for="colmapMatcher">Feature matcher</label>
+                        <select id="colmapMatcher" class="field-control">
+                            <option value="auto" selected>Auto (recommended)</option>
+                            <option value="exhaustive">Exhaustive (image sets)</option>
+                            <option value="sequential">Sequential (video frames)</option>
+                        </select>
                         <label class="field-label" for="colmapQuality">Quality preset</label>
                         <select id="colmapQuality" class="field-control">
                             <option value="low">Low (fast)</option>
@@ -68,16 +79,22 @@
                             <input type="checkbox" id="colmapRemoveDuplicates">
                             <span>Remove duplicate pictures (MD5)</span>
                         </label>
-                        <p class="settings-hint">Defaults loaded from your local COLMAP install.</p>
+                        <p class="settings-hint">GLOMAP is ~10x faster than incremental COLMAP with equal or better quality.</p>
                     </div>
 
                     <div class="settings-card">
                         <div class="settings-card__header">
                             <div>
-                                <h3>Brush Settings</h3>
-                                <p class="settings-subtitle">Training</p>
+                                <h3>Training Settings</h3>
+                                <p class="settings-subtitle">Trainer & Options</p>
                             </div>
                         </div>
+                        <label class="field-label" for="trainerType">Trainer</label>
+                        <select id="trainerType" class="field-control" style="margin-bottom: 1rem;">
+                            <option value="brush" selected>Brush (default)</option>
+                            <option value="lichtfeld">LichtFeld-Studio</option>
+                        </select>
+
                         <label class="field-label" for="brushSteps">Total training steps</label>
                         <input type="number" id="brushSteps" class="field-control" value="30000" min="1000" step="1000">
 
@@ -103,7 +120,7 @@
                             <input type="checkbox" id="brushShutdown">
                             <span style="color: var(--accent);">Turn off PC when finished</span>
                         </label>
-                        <p class="settings-hint">These values are sent to Brush before processing starts.</p>
+                        <p class="settings-hint">These values are sent to the trainer before processing starts.</p>
                     </div>
                 </div>
 
@@ -126,9 +143,9 @@
                             <input type="checkbox" id="resumeForceScratch">
                             <span>Start from Scratch (Reset Training)</span>
                         </label>
-                        <p class="settings-hint" style="margin-top: 0.25rem;">If checked, existing checkpoints are
-                            ignored
-                            and training starts from 0 using current Brush settings.</p>
+                            <p class="settings-hint" style="margin-top: 0.25rem;">If checked, existing checkpoints are
+                                ignored
+                                and training starts from 0 using current Training settings.</p>
 
                         <label class="field-label" for="resumeCheckpoint" style="margin-top: 1rem;">Start from
                             Checkpoint</label>
@@ -137,7 +154,7 @@
                         </select>
 
                         <p class="settings-hint" style="color: var(--accent); font-weight: 500; margin-top: 1rem;">
-                            ℹ️ Note: Target steps, viewer, and shutdown settings are now consolidated in the <b>Brush
+                            ℹ️ Note: Target steps, viewer, and shutdown settings are now consolidated in the <b>Training
                                 Settings</b> card above.
                         </p>
 
@@ -189,6 +206,11 @@
                             Total Frame Count
                         </label>
                     </div>
+
+                    <label style="cursor: pointer; display: flex; align-items: center; gap: 0.5rem;">
+                        <input type="checkbox" id="blurFilter" checked>
+                        Skip blurry frames (improves tracking, fewer floaters)
+                    </label>
 
                     <div style="display: flex; gap: 1rem; align-items: center;">
                         <div style="flex-grow: 1;">

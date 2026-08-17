@@ -5,12 +5,16 @@ const consoleWindow = document.getElementById('consoleWindow');
 const consoleOutput = document.getElementById('consoleOutput');
 const videoSettings = document.getElementById('videoSettings');
 const extractionValueInput = document.getElementById('extractionValue');
+const blurFilter = document.getElementById('blurFilter');
 const valueLabel = document.getElementById('valueLabel');
 const estimatedFramesDiv = document.getElementById('estimatedFrames');
 const startUploadBtn = document.getElementById('startUploadBtn');
 const colmapQuality = document.getElementById('colmapQuality');
 const colmapDense = document.getElementById('colmapDense');
 const colmapRemoveDuplicates = document.getElementById('colmapRemoveDuplicates');
+const colmapEngine = document.getElementById('colmapEngine');
+const colmapMatcher = document.getElementById('colmapMatcher');
+const trainerType = document.getElementById('trainerType');
 const brushSteps = document.getElementById('brushSteps');
 const brushViewer = document.getElementById('brushViewer');
 const brushShutdown = document.getElementById('brushShutdown');
@@ -55,6 +59,8 @@ async function loadSettings() {
         if (!res.ok) throw new Error('Failed to load settings');
         const data = await res.json();
         if (data?.colmap) {
+            if (data.colmap.engine) colmapEngine.value = data.colmap.engine;
+            if (data.colmap.matcher) colmapMatcher.value = data.colmap.matcher;
             if (data.colmap.quality) colmapQuality.value = data.colmap.quality;
             colmapDense.checked = Boolean(data.colmap.dense);
             colmapRemoveDuplicates.checked = Boolean(data.colmap.remove_duplicates);
@@ -125,14 +131,14 @@ function showUpdateModal(updates) {
     updateList.innerHTML = '';
 
     // Separate updates into categories
-    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush' || u.key === 'sharp');
+    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush' || u.key === 'sharp' || u.key === 'lichtfeld');
     const appUpdates = updates.filter(u => u.key === 'app');
 
     // Add section header for tools if there are tool updates
     if (toolUpdates.length > 0) {
         const toolHeader = document.createElement('div');
         toolHeader.className = 'update-section-header';
-        toolHeader.textContent = 'Tools (COLMAP & Brush)';
+        toolHeader.textContent = 'Tools (COLMAP, Brush, LichtFeld)';
         updateList.appendChild(toolHeader);
 
         toolUpdates.forEach(update => {
@@ -347,6 +353,7 @@ resumeTrainingBtn.addEventListener('click', async () => {
     formData.append('forceScratch', forceScratch);
 
     const brushSettings = {
+        trainer: trainerType ? trainerType.value : "brush",
         with_viewer: brushViewer.checked,
         shutdown_after_training: brushShutdown.checked,
         sh_degree: parseInt(brushShDegree.value, 10),
@@ -579,6 +586,7 @@ async function startUpload() {
     const val = extractionValueInput.value;
     formData.append('extractionMode', mode);
     formData.append('extractionValue', val);
+    formData.append('blurFilter', blurFilter.checked ? 'true' : 'false');
 
     // Add project name if provided
     const projectName = projectNameInput.value.trim();
@@ -588,13 +596,15 @@ async function startUpload() {
 
     // Add COLMAP + Brush settings
     const colmapSettings = {
+        engine: colmapEngine.value,
+        matcher: colmapMatcher.value,
         quality: colmapQuality.value,
         dense: colmapDense.checked,
-        remove_duplicates: colmapRemoveDuplicates.checked,
-        sparse: 1
+        remove_duplicates: colmapRemoveDuplicates.checked
     };
 
     const brushSettings = {
+        trainer: trainerType ? trainerType.value : "brush",
         total_steps: parseInt(brushSteps.value, 10),
         with_viewer: brushViewer.checked,
         shutdown_after_training: brushShutdown.checked,

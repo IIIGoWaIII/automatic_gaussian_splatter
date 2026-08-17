@@ -4,7 +4,9 @@ Update Manager for Automatic Gaussian Splatter
 Handles checking for updates and installing updates from GitHub for:
 - COLMAP (pre-built Windows binaries)
 - Brush (pre-built Windows binaries)
+- LichtFeld-Studio (pre-built Windows binaries)
 - Main App (git pull)
+- ML-Sharp (git clone)
 """
 
 import json
@@ -41,6 +43,10 @@ SHARP_REPO_URL = "https://github.com/apple/ml-sharp.git"
 SHARP_CHECKPOINT_URL = "https://ml-site.cdn-apple.com/models/sharp/sharp_2572gikvuh.pt"
 SHARP_CHECKPOINT_NAME = "sharp_2572gikvuh.pt"
 
+# LichtFeld-Studio specific
+LICHTFELD_REPO = "MrNeRF/LichtFeld-Studio"
+LICHTFELD_FOLDER = "LichtFeld-Studio-windows-nightly"
+
 
 class UpdateManager:
     """Manages checking and installing updates for all components."""
@@ -58,6 +64,7 @@ class UpdateManager:
             versions = {
                 "colmap": self._detect_colmap_version(),
                 "brush": self._detect_brush_version(),
+                "lichtfeld": self._detect_lichtfeld_version(),
                 "app_commit": self._get_local_git_commit()
             }
             self._save_versions(versions)
@@ -83,6 +90,21 @@ class UpdateManager:
                 pass
         return ""
     
+    def _detect_lichtfeld_version(self) -> str:
+        """Try to detect installed LichtFeld-Studio version."""
+        # Check for version in folder name (e.g., LichtFeld-Studio-windows-nightly-2026-02-03-5a92bff)
+        import re
+        for item in self.project_root.iterdir():
+            if item.is_dir() and item.name.startswith("LichtFeld-Studio"):
+                match = re.search(r'LichtFeld-Studio.*?-(\d{4}-\d{2}-\d{2})', item.name)
+                if match:
+                    return match.group(1)
+                # Also check for version tags
+                match = re.search(r'LichtFeld-Studio-windows-nightly-(v?[\d.]+)', item.name)
+                if match:
+                    return match.group(1)
+        return ""
+    
     def _get_local_git_commit(self) -> str:
         """Get the current git commit SHA of the main app."""
         try:
@@ -105,7 +127,7 @@ class UpdateManager:
             with open(self.versions_file, 'r') as f:
                 return json.load(f)
         except Exception:
-            return {"colmap": "", "brush": "", "app_commit": ""}
+            return {"colmap": "", "brush": "", "lichtfeld": "", "app_commit": ""}
     
     def _save_versions(self, versions: Dict[str, str]):
         """Save versions to versions.json."""
@@ -186,6 +208,21 @@ class UpdateManager:
             return data[0].get("sha", "")
         return None
     
+    def _get_latest_lichtfeld_release(self) -> Optional[Tuple[str, str]]:
+        """Get latest release tag and download URL from LichtFeld-Studio repo."""
+        data = self._github_api_request(f"/repos/{LICHTFELD_REPO}/releases/latest")
+        if data:
+            tag_name = data.get("tag_name", "")
+            # Find Windows asset
+            download_url = ""
+            for asset in data.get("assets", []):
+                if "windows" in asset.get("name", "").lower():
+                    download_url = asset.get("browser_download_url", "")
+                    break
+            if tag_name and download_url:
+                return tag_name, download_url
+        return None
+    
     def _get_local_sharp_commit(self) -> str:
         """Get the current git commit SHA of the local ml-sharp folder."""
         sharp_path = self.project_root / SHARP_FOLDER
@@ -260,6 +297,20 @@ class UpdateManager:
                 updates.append({
                     "name": "Brush",
                     "key": "brush",
+                    "current": local_version or "Unknown",
+                    "latest": latest_tag,
+                    "download_url": download_url
+                })
+        
+        # Check LichtFeld-Studio
+        lichtfeld_info = self._get_latest_lichtfeld_release()
+        if lichtfeld_info:
+            latest_tag, download_url = lichtfeld_info
+            local_version = local_versions.get("lichtfeld", "")
+            if latest_tag and latest_tag != local_version:
+                updates.append({
+                    "name": "LichtFeld-Studio",
+                    "key": "lichtfeld",
                     "current": local_version or "Unknown",
                     "latest": latest_tag,
                     "download_url": download_url
@@ -443,6 +494,8 @@ class UpdateManager:
             return self._update_component(
                 "Brush", download_url, BRUSH_FOLDER, "brush", latest_version, log
             )
+        elif app_key == "lichtfeld":
+            return self._update_lichtfeld(download_url, latest_version, log)
         elif app_key == "sharp":
             return self._install_sharp(latest_version, log)
         else:
@@ -678,6 +731,96 @@ class UpdateManager:
             log(f"{name} updated successfully to {latest_version}!")
             return True
             
+        finally:
+            # Clean up temp file
+            if tmp_path.exists():
+                tmp_path.unlink()
+    
+    def _update_lichtfeld(self, download_url: str, latest_version: str, log) -> bool:
+        """Update LichtFeld-Studio component."""
+        log(f"Starting LichtFeld-Studio update to {latest_version}...")
+        
+        if not download_url:
+            log("No download URL available for LichtFeld-Studio")
+            return False
+        
+        # Extract folder name from download URL (e.g., LichtFeld-Studio-windows-nightly-2026-03-29-abc123)
+        import re
+        match = re.search(r'LichtFeld-Studio[_-]windows[_-]nightly[-_]([^.]+)', download_url)
+        if not match:
+            # Try alternative pattern from tag name
+            match = re.search(r'v?([\d-]+)', latest_version)
+        
+        if match:
+            folder_date = match.group(1).strip('-_')
+            folder = f"LichtFeld-Studio-windows-nightly-{folder_date}"
+        else:
+            folder = f"LichtFeld-Studio-windows-nightly-{latest_version}"
+        
+        # Remove old LichtFeld folders
+        for item in self.project_root.iterdir():
+            if item.is_dir() and item.name.startswith("LichtFeld-Studio"):
+                log(f"Removing old LichtFeld-Studio folder: {item.name}")
+                if not self._safe_rmtree(item):
+                    log(f"Warning: Could not remove old folder {item.name}")
+        
+        # Download to temp file
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        
+        try:
+            log(f"Downloading LichtFeld-Studio...")
+            
+            def progress(downloaded, total):
+                pct = int((downloaded / total) * 100)
+                if pct % 10 == 0:
+                    log(f"Download progress: {pct}%")
+            
+            if not self._download_file(download_url, tmp_path, progress):
+                log("Failed to download LichtFeld-Studio")
+                return False
+            
+            log(f"Extracting and installing LichtFeld-Studio...")
+            
+            # Extract to temp directory first
+            extract_dir = self.project_root / "lichtfeld_temp"
+            if extract_dir.exists():
+                self._safe_rmtree(extract_dir)
+            
+            with zipfile.ZipFile(tmp_path, 'r') as zf:
+                zf.extractall(extract_dir)
+            
+            # Find the extracted folder and move it
+            extracted_items = list(extract_dir.iterdir())
+            if extracted_items:
+                target_path = self.project_root / folder
+                extracted_folder = extracted_items[0]
+                
+                if target_path.exists():
+                    self._safe_rmtree(target_path)
+                
+                log(f"Moving to {folder}...")
+                shutil.move(str(extracted_folder), str(target_path))
+                
+                # Clean up temp extract dir
+                if extract_dir.exists():
+                    self._safe_rmtree(extract_dir)
+            else:
+                log("Failed to find extracted contents")
+                return False
+            
+            # Update version
+            versions = self._load_versions()
+            versions["lichtfeld"] = latest_version
+            self._save_versions(versions)
+            
+            log(f"LichtFeld-Studio updated successfully to {latest_version}!")
+            return True
+            
+        except Exception as e:
+            log(f"LichtFeld-Studio update failed: {e}")
+            logger.error(f"LichtFeld update error: {e}", exc_info=True)
+            return False
         finally:
             # Clean up temp file
             if tmp_path.exists():

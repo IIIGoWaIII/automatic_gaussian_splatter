@@ -158,6 +158,7 @@ async def upload_dataset(
     files: List[UploadFile] = File(...), 
     extractionMode: str = Form("fps"),
     extractionValue: str = Form("2"),
+    blurFilter: str = Form("true"),
     projectName: Optional[str] = Form(None),
     colmapSettings: Optional[str] = Form(None),
     brushSettings: Optional[str] = Form(None),
@@ -194,7 +195,8 @@ async def upload_dataset(
         
         extraction_settings = {
             "mode": extractionMode,
-            "value": extractionValue
+            "value": extractionValue,
+            "blur_filter": blurFilter.lower() == "true"
         }
 
         # Optional pipeline settings (provided as JSON strings)

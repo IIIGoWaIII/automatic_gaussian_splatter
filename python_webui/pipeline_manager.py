@@ -15,16 +15,19 @@ import numpy as np
 REPO_ROOT = get_project_root().parent
 COLMAP_BAT_PATH = str(REPO_ROOT / "colmap-x64-windows-cuda" / "COLMAP.bat")
 BRUSH_PATH = str(REPO_ROOT / "brush-app-x86_64-pc-windows-msvc" / "brush_app.exe")
+LICHTFELD_PATH = str(REPO_ROOT / "LichtFeld-Studio-windows-nightly-2026-02-03-5a92bff" / "bin" / "LichtFeld-Studio.exe")
 SHARP_PATH = str(REPO_ROOT / "ml-sharp" / ".venv" / "Scripts" / "sharp.exe")
 
 DEFAULT_COLMAP_SETTINGS = {
-    "sparse": 1,      # Build sparse model
-    "dense": 0,       # Skip dense reconstruction for speed by default
-    "quality": "high",
+    "engine": "glomap",        # "glomap" | "incremental"
+    "matcher": "auto",         # "auto" | "exhaustive" | "sequential"
+    "quality": "high",         # "low" | "medium" | "high"
+    "dense": 0,                # Skip dense reconstruction for speed by default
     "remove_duplicates": False, # Remove duplicate images
 }
 
 DEFAULT_BRUSH_SETTINGS = {
+    "trainer": "brush",       # 'brush' or 'lichtfeld'
     "total_steps": 30000,
     "with_viewer": True,
     "sh_degree": 3,           # Spherical Harmonics degree (0-3)
@@ -53,15 +56,162 @@ class PipelineManager:
                     merged[key] = value
         return merged
 
-    def _build_colmap_args(self, colmap_dir: Path, images_dir: Path, settings: dict) -> List[str]:
-        return [
-            "automatic_reconstructor",
-            f"--workspace_path \"{colmap_dir}\"",
+    async def _run_colmap_pipeline(self, colmap_dir: Path, images_dir: Path, input_type: str, colmap_cfg: dict, log_callback: Callable[[str], None]):
+        """Run an explicit staged COLMAP pipeline (feature extraction, matching, mapping).
+
+        Produces the sparse model under <colmap_dir>/sparse so the existing
+        "largest model" discovery logic works unchanged. The database is kept at
+        <colmap_dir>/database.db.
+        """
+        database_path = colmap_dir / "database.db"
+        quality = colmap_cfg.get("quality", "high")
+        engine = colmap_cfg.get("engine", "glomap")
+        matcher = colmap_cfg.get("matcher", "auto")
+
+        # Resolve effective matcher: auto -> sequential for video, exhaustive for images
+        if matcher == "auto":
+            effective_matcher = "sequential" if input_type == "video" else "exhaustive"
+        else:
+            effective_matcher = matcher
+
+        # ---- Stage 1: Feature extraction ----
+        await log_callback("Running feature extraction...\n")
+        feature_args = [
+            "feature_extractor",
+            f"--database_path \"{database_path}\"",
             f"--image_path \"{images_dir}\"",
-            f"--sparse {1 if settings.get('sparse', 1) else 0}",
-            f"--dense {1 if settings.get('dense', 0) else 0}",
-            f"--quality {settings.get('quality', 'medium')}"
+            "--FeatureExtraction.use_gpu 1",
         ]
+
+        # Quality presets
+        if quality == "low":
+            feature_args.append("--FeatureExtraction.max_image_size 1600")
+            feature_args.append("--SiftExtraction.max_num_features 4096")
+        elif quality == "medium":
+            feature_args.append("--FeatureExtraction.max_image_size 3200")
+            feature_args.append("--SiftExtraction.max_num_features 8192")
+        else:  # high
+            feature_args.append("--FeatureExtraction.max_image_size 6400")
+            feature_args.append("--SiftExtraction.max_num_features 16384")
+            feature_args.append("--SiftExtraction.estimate_affine_shape 1")
+            feature_args.append("--SiftExtraction.domain_size_pooling 1")
+
+        # Video: one shared camera with a better distortion model for phones/action cams
+        if input_type == "video":
+            feature_args.append("--ImageReader.single_camera 1")
+            feature_args.append("--ImageReader.camera_model OPENCV")
+
+        await self.run_command(COLMAP_BAT_PATH, feature_args, log_callback)
+
+        # ---- Stage 2: Matching ----
+        guided = "--FeatureMatching.guided_matching 1" if quality == "high" else None
+
+        if effective_matcher == "exhaustive":
+            await log_callback("Running exhaustive matching...\n")
+            match_args = [
+                "exhaustive_matcher",
+                f"--database_path \"{database_path}\"",
+                "--FeatureMatching.use_gpu 1",
+            ]
+            if guided:
+                match_args.append(guided)
+            await self.run_command(COLMAP_BAT_PATH, match_args, log_callback)
+        else:  # sequential
+            await log_callback("Running sequential matching...\n")
+            match_args = [
+                "sequential_matcher",
+                f"--database_path \"{database_path}\"",
+                "--FeatureMatching.use_gpu 1",
+                "--SequentialMatching.overlap 10",
+            ]
+            if guided:
+                match_args.append(guided)
+            await self.run_command(COLMAP_BAT_PATH, match_args, log_callback)
+
+        # ---- Stage 3: Mapping ----
+        sparse_out = colmap_dir / "sparse"
+        ensure_directory(sparse_out)
+
+        if engine == "glomap":
+            # Best-effort focal calibration (important for EXIF-less video). If it
+            # fails, log a warning and continue.
+            await log_callback("Running view graph calibration (best effort)...\n")
+            try:
+                await self.run_command(COLMAP_BAT_PATH, [
+                    "view_graph_calibrator",
+                    f"--database_path \"{database_path}\"",
+                ], log_callback)
+            except Exception as e:
+                logger.warning(f"view_graph_calibrator failed (continuing): {e}")
+                await log_callback(f"WARNING: view_graph_calibrator failed, continuing: {e}\n")
+
+            await log_callback("Running global mapper (GLOMAP)...\n")
+            await self.run_command(COLMAP_BAT_PATH, [
+                "global_mapper",
+                f"--database_path \"{database_path}\"",
+                f"--image_path \"{images_dir}\"",
+                f"--output_path \"{sparse_out}\"",
+            ], log_callback)
+        else:  # incremental
+            await log_callback("Running incremental mapper...\n")
+            await self.run_command(COLMAP_BAT_PATH, [
+                "mapper",
+                f"--database_path \"{database_path}\"",
+                f"--image_path \"{images_dir}\"",
+                f"--output_path \"{sparse_out}\"",
+            ], log_callback)
+
+        # ---- Stage 4: Dense reconstruction (optional) ----
+        if colmap_cfg.get("dense", 0):
+            await log_callback("Running dense reconstruction...\n")
+            # Find the largest sparse model (mirrors the discovery logic below)
+            chosen_model = self._find_largest_sparse_model(sparse_out)
+            if chosen_model is None:
+                raise Exception("COLMAP did not produce a valid sparse model for dense reconstruction.")
+
+            dense_dir = colmap_dir / "dense"
+            await self.run_command(COLMAP_BAT_PATH, [
+                "image_undistorter",
+                f"--image_path \"{images_dir}\"",
+                f"--input_path \"{chosen_model}\"",
+                f"--output_path \"{dense_dir}\"",
+                "--output_type COLMAP",
+            ], log_callback)
+            await self.run_command(COLMAP_BAT_PATH, [
+                "patch_match_stereo",
+                f"--workspace_path \"{dense_dir}\"",
+            ], log_callback)
+            await self.run_command(COLMAP_BAT_PATH, [
+                "stereo_fusion",
+                f"--workspace_path \"{dense_dir}\"",
+                f"--output_path \"{dense_dir / 'fused.ply'}\"",
+            ], log_callback)
+
+    def _find_largest_sparse_model(self, colmap_sparse: Path) -> Optional[Path]:
+        """Return the path of the largest sparse model under colmap_sparse, or None."""
+        if not colmap_sparse.exists():
+            return None
+        sparse_candidates = []
+        for folder in colmap_sparse.iterdir():
+            if folder.is_dir():
+                points_bin = folder / "points3D.bin"
+                points_txt = folder / "points3D.txt"
+                size = 0
+                if points_bin.exists():
+                    size = points_bin.stat().st_size
+                elif points_txt.exists():
+                    size = points_txt.stat().st_size
+                if size > 0:
+                    sparse_candidates.append((size, folder))
+        if not sparse_candidates:
+            # Fallback: maybe the sparse folder IS the model itself (flat structure)
+            points_bin = colmap_sparse / "points3D.bin"
+            points_txt = colmap_sparse / "points3D.txt"
+            if points_bin.exists() or points_txt.exists():
+                return colmap_sparse
+            return None
+        sparse_candidates.sort(key=lambda x: x[0], reverse=True)
+        return sparse_candidates[0][1]
 
     def _build_brush_args(self, task_dir: Path, model_dir: Path, settings: dict) -> List[str]:
         args = [
@@ -91,6 +241,38 @@ class PipelineManager:
             args.append("--with-viewer")
         return args
 
+    def _build_lichtfeld_args(self, task_dir: Path, model_dir: Path, settings: dict) -> List[str]:
+        """Build LichtFeld-Studio args."""
+        args = [
+            f"--data-path \"{task_dir}\"",
+            f"--output-path \"{model_dir}\"",
+            f"--iter {int(settings.get('total_steps', 30000))}",
+            f"--sh-degree {int(settings.get('sh_degree', 3))}",
+            f"--max-cap {int(settings.get('max_splats', 3000000))}",
+            "--undistort"
+        ]
+        if not settings.get("with_viewer", True):
+            args.append("--headless")
+        else:
+            args.append("--train")
+        return args
+
+    def _build_resume_lichtfeld_args(self, task_dir: Path, model_dir: Path, checkpoint_file: Path, settings: dict) -> List[str]:
+        """Build LichtFeld-Studio args for resuming training."""
+        args = [
+            f"--resume \"{checkpoint_file}\"",
+            f"--output-path \"{model_dir}\"",
+            f"--iter {int(settings.get('total_steps', 30000))}",
+            f"--sh-degree {int(settings.get('sh_degree', 3))}",
+            f"--max-cap {int(settings.get('max_splats', 3000000))}",
+            "--undistort"
+        ]
+        if not settings.get("with_viewer", True):
+            args.append("--headless")
+        else:
+            args.append("--train")
+        return args
+
     def get_available_outputs(self) -> List[dict]:
         """List all output folders that have valid sparse data for resume training."""
         outputs = []
@@ -103,21 +285,36 @@ class PipelineManager:
                 model_path = folder / "model"
                 
                 if sparse_path.exists():
-                    # Find available PLY checkpoints
+                    # Find available PLY/Resume checkpoints
                     ply_files = []
                     if model_path.exists():
+                        # Brush PLY exports
                         for ply in model_path.glob("export_*.ply"):
-                            # Extract iteration number from filename
                             try:
                                 iter_str = ply.stem.replace("export_", "")
                                 iteration = int(iter_str)
                                 ply_files.append({
                                     "filename": ply.name,
-                                    "iteration": iteration
+                                    "iteration": iteration,
+                                    "type": "brush"
                                 })
                             except ValueError:
                                 pass
-                    
+                        
+                        # LichtFeld resume files (e.g. checkpoints/checkpoint_*.resume or model/checkpoint_*.resume)
+                        for resume in model_path.rglob("*.resume"):
+                            try:
+                                # typically checkpoint_30000.resume
+                                iter_str = resume.stem.replace("checkpoint_", "")
+                                iteration = int(iter_str)
+                                ply_files.append({
+                                    "filename": str(resume.relative_to(model_path)),
+                                    "iteration": iteration,
+                                    "type": "lichtfeld"
+                                })
+                            except ValueError:
+                                pass
+                                
                     ply_files.sort(key=lambda x: x["iteration"])
                     
                     outputs.append({
@@ -167,14 +364,29 @@ class PipelineManager:
             
             try:
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
-                # Use standard brush args (no start-iter)
-                # Define monitor for Brush
-                async def brush_monitor(proc, term_ctx):
-                    await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                trainer = brush_cfg.get("trainer", "brush")
                 
-                brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
-                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
+                if trainer == "lichtfeld":
+                    await log_callback("--- Running LichtFeld-Studio ---\n")
+                    # Lichtfeld doesn't need monitor since --headless exits on completion
+                    # but if with_viewer is true, we might need a monitor.
+                    # For now, let's assume headless exits automatically, and viewer stays open.
+                    args = self._build_lichtfeld_args(task_dir, model_dir, brush_cfg)
+                    
+                    async def lfs_monitor(proc, term_ctx):
+                        await self.monitor_lichtfeld_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                        
+                    monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                    await self.run_command(LICHTFELD_PATH, args, log_callback, cwd=task_dir, monitor_completion=lfs_monitor if monitor_enabled else None)
+                else:
+                    await log_callback("--- Running Brush ---\n")
+                    # Define monitor for Brush
+                    async def brush_monitor(proc, term_ctx):
+                        await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                    
+                    brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
+                    monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                    await self.run_command(BRUSH_PATH, brush_args, log_callback, cwd=task_dir, monitor_completion=brush_monitor if monitor_enabled else None)
                 
                 await log_callback("--- Training Completed Successfully ---\n")
                 
@@ -188,32 +400,59 @@ class PipelineManager:
 
         else:
             # RESUME logic
-            # Find the PLY checkpoint
-            expected_ply = model_dir / f"export_{start_iter}.ply"
-            if not expected_ply.exists():
-                available = list(model_dir.glob("export_*.ply"))
-                available_iters = [p.stem.replace("export_", "") for p in available]
-                raise Exception(f"PLY checkpoint for iteration {start_iter} not found. Available: {available_iters}")
-            
-            # CRITICAL: Copy checkpoint PLY to init.ply in project root
-            # Brush uses init.ply as the initialization point for training
-            init_ply_path = task_dir / "init.ply"
-            await log_callback(f"Copying checkpoint {expected_ply.name} to init.ply for initialization...\n")
-            shutil.copy2(expected_ply, init_ply_path)
-            
-            await log_callback(f"--- Resuming Training from iteration {start_iter} ---\n")
-            await log_callback(f"Project: {task_dir}\n")
-            await log_callback(f"Target steps: {brush_settings.get('total_steps', 30000)}\n")
-            
             try:
                 brush_cfg = self._merge_settings(brush_settings, DEFAULT_BRUSH_SETTINGS)
+                trainer = brush_cfg.get("trainer", "brush")
+                
+                # Check for Lichtfeld or Brush checkpoint
+                if trainer == "lichtfeld":
+                    # For lichtfeld, we might resume from `.resume` or `.ply`
+                    expected_checkpoint = model_dir / f"checkpoint_{start_iter}.resume"
+                    if not expected_checkpoint.exists():
+                        # Try inside checkpoints folder
+                        expected_checkpoint = model_dir / "checkpoints" / f"checkpoint_{start_iter}.resume"
+                        if not expected_checkpoint.exists():
+                            # Maybe we are resuming a Brush PLY in Lichtfeld?
+                            expected_checkpoint = model_dir / f"export_{start_iter}.ply"
+                    
+                    if not expected_checkpoint.exists():
+                        raise Exception(f"Checkpoint for iteration {start_iter} not found for LichtFeld-Studio")
+                        
+                    await log_callback(f"--- Resuming Training from {expected_checkpoint.name} ---\n")
+                    await log_callback(f"Project: {task_dir}\n")
+                    await log_callback(f"Target steps: {brush_settings.get('total_steps', 30000)}\n")
 
-                # Define monitor for Brush
-                async def brush_monitor(proc, term_ctx):
-                    await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
-                brush_args = self._build_resume_brush_args(task_dir, model_dir, start_iter, brush_cfg)
-                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
-                await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
+                    args = self._build_resume_lichtfeld_args(task_dir, model_dir, expected_checkpoint, brush_cfg)
+                    
+                    async def lfs_monitor(proc, term_ctx):
+                        await self.monitor_lichtfeld_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+
+                    monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                    await self.run_command(LICHTFELD_PATH, args, log_callback, cwd=task_dir, monitor_completion=lfs_monitor if monitor_enabled else None)
+                else:
+                    expected_ply = model_dir / f"export_{start_iter}.ply"
+                    if not expected_ply.exists():
+                        available = list(model_dir.glob("export_*.ply"))
+                        available_iters = [p.stem.replace("export_", "") for p in available]
+                        raise Exception(f"PLY checkpoint for iteration {start_iter} not found. Available: {available_iters}")
+                    
+                    # CRITICAL: Copy checkpoint PLY to init.ply in project root
+                    # Brush uses init.ply as the initialization point for training
+                    init_ply_path = task_dir / "init.ply"
+                    await log_callback(f"Copying checkpoint {expected_ply.name} to init.ply for initialization...\n")
+                    shutil.copy2(expected_ply, init_ply_path)
+                    
+                    await log_callback(f"--- Resuming Training from iteration {start_iter} ---\n")
+                    await log_callback(f"Project: {task_dir}\n")
+                    await log_callback(f"Target steps: {brush_settings.get('total_steps', 30000)}\n")
+
+                    # Define monitor for Brush
+                    async def brush_monitor(proc, term_ctx):
+                        await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+                    
+                    brush_args = self._build_resume_brush_args(task_dir, model_dir, start_iter, brush_cfg)
+                    monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                    await self.run_command(BRUSH_PATH, brush_args, log_callback, cwd=task_dir, monitor_completion=brush_monitor if monitor_enabled else None)
                 
                 await log_callback("--- Resume Training Completed Successfully ---\n")
 
@@ -315,6 +554,31 @@ class PipelineManager:
                         process.terminate()
                 except Exception as e:
                     logger.error(f"Failed to terminate Brush: {e}")
+                break
+            await asyncio.sleep(5) # Poll every 5 seconds
+
+    async def monitor_lichtfeld_completion(self, process: asyncio.subprocess.Process, termination_context: dict, model_dir: Path, target_steps: int, log_callback: Callable[[str], None]):
+        """Periodically checks for the final export file and terminates the process if found."""
+        target_file = model_dir / f"checkpoint_{target_steps}.resume"
+        target_file_alt = model_dir / f"checkpoints/checkpoint_{target_steps}.resume"
+        target_ply = model_dir / f"export_{target_steps}.ply"
+        
+        logger.info(f"Monitoring for completion file: {target_file}")
+        
+        while process.returncode is None:
+            if target_file.exists() or target_file_alt.exists() or target_ply.exists():
+                await log_callback(f"\n[INFO] Final export detected. Training at target steps ({target_steps}) is complete.\n")
+                await log_callback("[INFO] Automatically closing LichtFeld-Studio to proceed...\n")
+                logger.info("Completion file found. Terminating LichtFeld-Studio process tree.")
+                termination_context["intentional"] = True
+                try:
+                    # On Windows, we use taskkill to ensure the whole process tree (shell + app) is killed
+                    if os.name == 'nt':
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], capture_output=True)
+                    else:
+                        process.terminate()
+                except Exception as e:
+                    logger.error(f"Failed to terminate LichtFeld-Studio: {e}")
                 break
             await asyncio.sleep(5) # Poll every 5 seconds
 
@@ -466,11 +730,95 @@ class PipelineManager:
         # since it's inside an async wrapper in main usually, or we can just print for now
         # Ideally this should be run in a separate thread if blocking loop.
         
+        ensure_directory(output_dir)
+
+        # Determine candidate frames (per existing step logic)
+        candidate_indices = []
         count = 0
+        next_frame_to_save = 0.0
+        while True:
+            if count >= next_frame_to_save:
+                candidate_indices.append(count)
+                next_frame_to_save += step
+            count += 1
+            if count >= total_frames:
+                break
+
+        blur_filter = settings.get("blur_filter", True)
+        use_blur_filter = blur_filter and len(candidate_indices) >= 10
+
+        if use_blur_filter:
+            # Pass 1: decode video, compute Laplacian variance score for each candidate
+            scores = []
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise Exception("Failed to open video file")
+            idx = 0
+            cand_set = set(candidate_indices)
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx in cand_set:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    score = cv2.Laplacian(gray, cv2.CV_64F).var()
+                    scores.append(score)
+                frame_idx += 1
+            cap.release()
+
+            # Determine threshold: keep frames with score >= 0.25 * median(scores)
+            import statistics
+            if scores:
+                median_score = statistics.median(scores)
+                threshold = 0.25 * median_score
+                keep_mask = [s >= threshold for s in scores]
+
+                # If that would keep fewer than half, keep the top 50% by score instead
+                if sum(keep_mask) < len(scores) / 2:
+                    keep_mask = [False] * len(scores)
+                    sorted_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                    keep_count = max(1, len(scores) // 2)
+                    for i in sorted_idx[:keep_count]:
+                        keep_mask[i] = True
+
+                dropped = len(scores) - sum(keep_mask)
+                logger.info(f"Blur filter: dropped {dropped} of {len(scores)} candidate frames (threshold={threshold:.2f})")
+            else:
+                keep_mask = []
+                dropped = 0
+                threshold = 0.0
+
+            # Pass 2: decode again, write only kept candidates with contiguous zero-padded names
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise Exception("Failed to open video file")
+            saved_count = 0
+            frame_idx = 0
+            score_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx in cand_set:
+                    if keep_mask[score_idx]:
+                        frame_name = f"frame_{saved_count:05d}.jpg"
+                        cv2.imwrite(str(output_dir / frame_name), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+                        saved_count += 1
+                    score_idx += 1
+                frame_idx += 1
+            cap.release()
+            blur_info = {"dropped": dropped, "total": len(scores), "threshold": threshold}
+            return saved_count, orig_fps, blur_info
+
+        # Single-pass behavior (blur filter disabled or < 10 candidates)
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise Exception("Failed to open video file")
+
         saved_count = 0
         next_frame_to_save = 0.0
-        
-        ensure_directory(output_dir)
+        count = 0
 
         while True:
             ret, frame = cap.read()
@@ -479,14 +827,14 @@ class PipelineManager:
             
             if count >= next_frame_to_save:
                 frame_name = f"frame_{saved_count:05d}.jpg"
-                cv2.imwrite(str(output_dir / frame_name), frame)
+                cv2.imwrite(str(output_dir / frame_name), frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
                 saved_count += 1
                 next_frame_to_save += step
             
             count += 1
 
         cap.release()
-        return saved_count, orig_fps
+        return saved_count, orig_fps, None
 
     async def process_dataset(self, task_id: str, input_type: str, input_path: Path, extraction_settings: dict, log_callback: Callable[[str], None], colmap_settings: Optional[dict] = None, brush_settings: Optional[dict] = None, project_name: Optional[str] = None):
         """
@@ -546,11 +894,12 @@ class PipelineManager:
             await log_callback("--- Step 1: Preprocessing Inputs ---\n")
             
             if input_type == 'video':
-                await log_callback(f"Extracting frames from video... Mode: {extraction_settings.get('mode')} Value: {extraction_settings.get('value')}\n")
+                blur_active = extraction_settings.get("blur_filter", True)
+                await log_callback(f"Extracting frames from video... Mode: {extraction_settings.get('mode')} Value: {extraction_settings.get('value')} Blur filter: {'on' if blur_active else 'off'}\n")
                 
                 # Run extraction in thread pool to avoid blocking asyncio loop
                 loop = asyncio.get_running_loop()
-                num_extracted, orig_fps = await loop.run_in_executor(
+                num_extracted, orig_fps, blur_info = await loop.run_in_executor(
                     None, 
                     self.extract_frames, 
                     input_path, 
@@ -560,6 +909,8 @@ class PipelineManager:
                 )
                 
                 await log_callback(f"Extracted {num_extracted} frames (Source: {orig_fps:.2f} fps).\n")
+                if blur_info:
+                    await log_callback(f"Blur filter: dropped {blur_info['dropped']} of {blur_info['total']} candidate frames (threshold={blur_info['threshold']:.2f})\n")
                 
             else: # images
                 # If images are already in a folder (uploads/task_id/raw_images/), move/copy them to images_dir
@@ -629,71 +980,58 @@ class PipelineManager:
                 await log_callback(f"CRITICAL ERROR: {msg}\n")
                 raise Exception(msg)
 
-            # We use 'automatic_reconstructor' for simplicity
+            # We use an explicit staged COLMAP pipeline (feature extraction,
+            # matching, mapping) instead of 'automatic_reconstructor'.
             database_path = colmap_dir / "database.db"
-            
-            colmap_args = self._build_colmap_args(colmap_dir, images_dir, colmap_cfg)
-            await self.run_command(COLMAP_BAT_PATH, colmap_args, log_callback)
 
-            # 3. Brush Training
-            await log_callback("--- Step 3: Running Brush (Training) ---\n")
-            # Brush needs the colmap sparse output. 
-            # automatic_reconstructor usually puts sparse model in workspace_path/sparse/0
-            sparse_path = colmap_dir / "sparse" / "0"
+            await self._run_colmap_pipeline(colmap_dir, images_dir, input_type, colmap_cfg, log_callback)
+
+            # 3. Training
+            trainer = brush_cfg.get("trainer", "brush")
             
-            if not sparse_path.exists():
-                raise Exception("COLMAP did not produce a sparse model in the expected location.")
+            if trainer == "lichtfeld":
+                await log_callback("--- Step 3: Running LichtFeld-Studio (Training) ---\n")
+            else:
+                await log_callback("--- Step 3: Running Brush (Training) ---\n")
             
+            # Both need the colmap sparse output.
+            # The pipeline produces the sparse model under colmap_dir/sparse.
             final_sparse_dir = task_dir / "sparse"
             if final_sparse_dir.exists():
                 shutil.rmtree(final_sparse_dir)
             ensure_directory(final_sparse_dir)
 
             # Find the largest sparse model in colmap_dir/sparse
-            sparse_candidates = []
             colmap_sparse = colmap_dir / "sparse"
-            
-            # Check for subfolders (0, 1, etc.)
-            for folder in colmap_sparse.iterdir():
-                if folder.is_dir():
-                    # Check for bin or txt model files
-                    points_bin = folder / "points3D.bin"
-                    points_txt = folder / "points3D.txt"
-                    
-                    size = 0
-                    if points_bin.exists():
-                        size = points_bin.stat().st_size
-                    elif points_txt.exists():
-                        size = points_txt.stat().st_size
-                    
-                    if size > 0:
-                        sparse_candidates.append((size, folder))
-            
-            if not sparse_candidates:
-                 # Fallback: maybe the sparse folder IS the model itself (flat structure)
-                 points_bin = colmap_sparse / "points3D.bin"
-                 points_txt = colmap_sparse / "points3D.txt"
-                 if points_bin.exists() or points_txt.exists():
-                     shutil.copytree(colmap_sparse, final_sparse_dir / "0")
-                     logger.info("Copied flat sparse model to sparse/0")
-                 else:
-                     raise Exception("COLMAP did not produce a valid sparse model (points3D not found).")
+            best_model_path = self._find_largest_sparse_model(colmap_sparse)
+
+            if best_model_path is None:
+                raise Exception("COLMAP did not produce a valid sparse model (points3D not found).")
+
+            if best_model_path == colmap_sparse:
+                # Flat structure: the sparse folder IS the model itself
+                shutil.copytree(colmap_sparse, final_sparse_dir / "0")
+                logger.info("Copied flat sparse model to sparse/0")
             else:
-                # Sort by size descending (largest points3D = most reconstructed points)
-                sparse_candidates.sort(key=lambda x: x[0], reverse=True)
-                best_model_path = sparse_candidates[0][1]
-                
-                logger.info(f"Multiple COLMAP models found. Selected largest: {best_model_path.name} (points3D size: {sparse_candidates[0][0]} bytes)")
-                
+                logger.info(f"Multiple COLMAP models found. Selected largest: {best_model_path.name}")
                 shutil.copytree(best_model_path, final_sparse_dir / "0")
 
-            # Define monitor for Brush
-            async def brush_monitor(proc, term_ctx):
-                await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+            if trainer == "lichtfeld":
+                # Define monitor for LichtFeld-Studio
+                async def lfs_monitor(proc, term_ctx):
+                    await self.monitor_lichtfeld_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
 
-            brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
-            monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
-            await self.run_command(BRUSH_PATH, brush_args, log_callback, monitor_completion=brush_monitor if monitor_enabled else None)
+                args = self._build_lichtfeld_args(task_dir, model_dir, brush_cfg)
+                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                await self.run_command(LICHTFELD_PATH, args, log_callback, cwd=task_dir, monitor_completion=lfs_monitor if monitor_enabled else None)
+            else:
+                # Define monitor for Brush
+                async def brush_monitor(proc, term_ctx):
+                    await self.monitor_brush_completion(proc, term_ctx, model_dir, int(brush_cfg.get('total_steps', 30000)), log_callback)
+
+                brush_args = self._build_brush_args(task_dir, model_dir, brush_cfg)
+                monitor_enabled = brush_cfg.get("with_viewer") and brush_cfg.get("shutdown_after_training")
+                await self.run_command(BRUSH_PATH, brush_args, log_callback, cwd=task_dir, monitor_completion=brush_monitor if monitor_enabled else None)
 
             await log_callback("--- Pipeline Completed Successfully ---\n")
 
