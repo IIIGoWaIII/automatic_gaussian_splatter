@@ -105,6 +105,20 @@ class UpdateManager:
                     return match.group(1)
         return ""
     
+    def _is_git_repo(self) -> bool:
+        """Check if the main app folder is a git repository."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=str(self.project_root),
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            return result.returncode == 0 and result.stdout.strip() == "true"
+        except Exception:
+            return False
+
     def _get_local_git_commit(self) -> str:
         """Get the current git commit SHA of the main app."""
         try:
@@ -318,7 +332,7 @@ class UpdateManager:
         
         # Check Main App
         latest_commit = self._get_latest_app_commit()
-        if latest_commit:
+        if latest_commit and self._is_git_repo():
             local_commit = self._get_local_git_commit()
             if latest_commit and latest_commit != local_commit:
                 updates.append({
