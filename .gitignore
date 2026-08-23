@@ -11,4 +11,9 @@ target/
 versions.json
 ml-sharp/
 LichtFeld-Studio-windows-nightly*/
+2d-gaussian-splatting-main/.venv/
+2d-gaussian-splatting-main/submodules/simple-knn/build/
+2d-gaussian-splatting-main/submodules/diff-surfel-rasterization/build/
+2d-gaussian-splatting-main/**/*.egg-info/
+
 
