@@ -7,6 +7,7 @@ Handles checking for updates and installing updates from GitHub for:
 - LichtFeld-Studio (pre-built Windows binaries)
 - Main App (git pull)
 - ML-Sharp (git clone)
+- 2DGS (bundled source; bootstraps venv and compiles CUDA extensions)
 """
 
 import json
@@ -46,6 +47,17 @@ SHARP_CHECKPOINT_NAME = "sharp_2572gikvuh.pt"
 # LichtFeld-Studio specific
 LICHTFELD_REPO = "MrNeRF/LichtFeld-Studio"
 LICHTFELD_FOLDER = "LichtFeld-Studio-windows-nightly"
+
+# 2DGS specific (source is bundled in this repository; setup only bootstraps the venv)
+TWO_DGS_FOLDER = "2d-gaussian-splatting-main"
+TWO_DGS_PYTHON_VERSION = "3.11"
+TWO_DGS_TORCH_VERSIONS = ["torch==2.6.0", "torchvision==0.21.0"]
+TWO_DGS_TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
+TWO_DGS_PIP_PACKAGES = [
+    "numpy", "pillow", "plyfile", "tqdm", "opencv-python", "scipy",
+    "tensorboard", "lpips", "open3d", "trimesh", "scikit-image",
+    "matplotlib", "mediapy",
+]
 
 
 class UpdateManager:
@@ -277,6 +289,12 @@ class UpdateManager:
         venv_path = sharp_path / ".venv"
         sharp_exe = venv_path / "Scripts" / "sharp.exe"
         return sharp_exe.exists()
+
+    def _is_2dgs_installed(self) -> bool:
+        """Check if the bundled 2DGS trainer has a bootstrapped virtual environment."""
+        two_dgs_path = self.project_root / TWO_DGS_FOLDER
+        venv_python = two_dgs_path / ".venv" / "Scripts" / "python.exe"
+        return venv_python.exists() and (two_dgs_path / "train.py").exists()
     
     def check_for_updates(self) -> Dict:
         """
@@ -359,6 +377,16 @@ class UpdateManager:
                     "download_url": SHARP_REPO_URL
                 })
         
+        # Check 2DGS (source is bundled; only the Python env needs bootstrapping)
+        if not self._is_2dgs_installed():
+            updates.append({
+                "name": "2DGS Trainer Setup (Python env)",
+                "key": "2dgs",
+                "current": "Not Installed",
+                "latest": "bundled source",
+                "download_url": ""
+            })
+
         return {
             "updates_available": len(updates) > 0,
             "updates": updates
@@ -512,28 +540,27 @@ class UpdateManager:
             return self._update_lichtfeld(download_url, latest_version, log)
         elif app_key == "sharp":
             return self._install_sharp(latest_version, log)
+        elif app_key == "2dgs":
+            return self._install_2dgs(latest_version, log)
         else:
             log(f"Unknown app key: {app_key}")
             return False
 
-    def _get_python_executable(self, log) -> Optional[str]:
-        """Find a suitable Python 3.13 executable."""
+    def _get_python_executable(self, log, required_version: str = "3.13") -> Optional[str]:
+        """Find a Python executable matching required_version (e.g. '3.13')."""
+        ver_num = required_version.replace(".", "")
         # Try common names
-        for cmd in ["python3.13", "python313", "python", "py"]:
+        for cmd in [f"python{required_version}", f"python{ver_num}", "python", "py"]:
             try:
                 args = [cmd, "--version"]
                 if cmd == "py":
-                    args = ["py", "-3.13", "--version"]
-                
+                    args = ["py", f"-{required_version}", "--version"]
+
                 result = subprocess.run(args, capture_output=True, text=True, timeout=5)
                 if result.returncode == 0:
                     version = result.stdout.strip() or result.stderr.strip()
-                    if "3.13" in version:
-                        return cmd if cmd != "py" else "py -3.13"
-                    elif cmd == "python" or cmd == "python3":
-                        # If it's just 'python', check if it's 3.13
-                        if "3.13" in version:
-                           return cmd
+                    if required_version in version:
+                        return cmd if cmd != "py" else f"py -{required_version}"
             except:
                 continue
         return None
@@ -706,6 +733,154 @@ class UpdateManager:
             log(f"ML-Sharp installation failed: {e}")
             logger.error(f"Sharp install error: {e}", exc_info=True)
             return False
+
+    def _find_nvcc(self) -> Optional[str]:
+        """Locate nvcc.exe from the CUDA toolkit (PATH first, then default install dir)."""
+        path = shutil.which("nvcc")
+        if path:
+            return path
+        cuda_root = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA")
+        if cuda_root.exists():
+            for candidate in sorted(cuda_root.glob("v*/bin/nvcc.exe"), reverse=True):
+                return str(candidate)
+        return None
+
+    def _has_msvc(self) -> bool:
+        """Detect MSVC C++ build tools via vswhere or standard install locations."""
+        vswhere = Path("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+        if vswhere.exists():
+            try:
+                result = subprocess.run(
+                    [str(vswhere), "-latest", "-products", "*",
+                     "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                     "-property", "installationPath"],
+                    capture_output=True, text=True, timeout=15
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return True
+            except Exception:
+                pass
+        for root in (Path("C:/Program Files/Microsoft Visual Studio"),
+                     Path("C:/Program Files (x86)/Microsoft Visual Studio")):
+            if root.exists() and list(root.glob("**/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe")):
+                return True
+        return False
+
+    def _install_2dgs(self, latest_version: str, log) -> bool:
+        """Bootstrap the Python environment for the bundled 2DGS trainer.
+
+        The patched 2DGS source ships inside this repository; setup creates the
+        .venv, installs PyTorch + dependencies and compiles the two CUDA
+        extensions. Requires Python 3.11, MSVC Build Tools and a CUDA toolkit.
+        """
+        log("Starting 2DGS trainer setup...")
+        two_dgs_path = self.project_root / TWO_DGS_FOLDER
+
+        if not (two_dgs_path / "train.py").exists():
+            log(f"Error: bundled 2DGS source not found at {two_dgs_path}.")
+            log("Update the main app first and try again.")
+            return False
+
+        python_exe = self._get_python_executable(log, required_version=TWO_DGS_PYTHON_VERSION)
+        if not python_exe:
+            log(f"Error: Python {TWO_DGS_PYTHON_VERSION} not found. The 2DGS trainer requires Python {TWO_DGS_PYTHON_VERSION}.")
+            return False
+
+        try:
+            venv_path = two_dgs_path / ".venv"
+            if not venv_path.exists():
+                log(f"Creating Python {TWO_DGS_PYTHON_VERSION} virtual environment...")
+                py_args = python_exe.split()
+                result = subprocess.run(
+                    [*py_args, "-m", "venv", ".venv"],
+                    cwd=str(two_dgs_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=180
+                )
+                if result.returncode != 0:
+                    log(f"Venv creation failed: {result.stderr}")
+                    return False
+
+            pip_exe = venv_path / "Scripts" / "pip.exe"
+
+            log("Upgrading pip...")
+            subprocess.run([str(pip_exe), "install", "--upgrade", "pip"], cwd=str(two_dgs_path), timeout=180)
+
+            log("Installing CUDA-enabled PyTorch 2.6.0 (large download)...")
+            result = subprocess.run(
+                [str(pip_exe), "install", *TWO_DGS_TORCH_VERSIONS, "--index-url", TWO_DGS_TORCH_INDEX],
+                cwd=str(two_dgs_path),
+                capture_output=True,
+                text=True,
+                timeout=1500 # 25 minutes
+            )
+            if result.returncode != 0:
+                log(f"PyTorch installation failed: {result.stderr[-800:]}")
+                return False
+
+            log("Installing Python dependencies...")
+            result = subprocess.run(
+                [str(pip_exe), "install", *TWO_DGS_PIP_PACKAGES],
+                cwd=str(two_dgs_path),
+                capture_output=True,
+                text=True,
+                timeout=1200 # 20 minutes
+            )
+            if result.returncode != 0:
+                log(f"Dependency installation failed: {result.stderr[-800:]}")
+                return False
+
+            # Both CUDA extensions must be compiled locally - verify toolchain first.
+            if self._find_nvcc() is None:
+                log("Error: CUDA toolkit (nvcc) not found. Compiling the 2DGS extensions requires the NVIDIA CUDA Toolkit.")
+                return False
+            if not self._has_msvc():
+                log("Error: MSVC C++ Build Tools not found. Install 'Desktop development with C++' via Visual Studio Build Tools.")
+                return False
+
+            for sub in ("diff-surfel-rasterization", "simple-knn"):
+                log(f"Compiling extension: {sub} (this can take several minutes)...")
+                result = subprocess.run(
+                    [str(pip_exe), "install", "-e", f"./submodules/{sub}"],
+                    cwd=str(two_dgs_path),
+                    capture_output=True,
+                    text=True,
+                    timeout=2400 # 40 minutes per extension
+                )
+                if result.returncode != 0:
+                    log(f"Failed to build {sub}: {result.stderr[-1200:]}")
+                    return False
+
+            log("Verifying installation (CUDA + extension imports)...")
+            verify = subprocess.run(
+                [str(venv_path / "Scripts" / "python.exe"), "-c",
+                 "import torch, simple_knn, diff_surfel_rasterization; print(torch.cuda.is_available())"],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+            if verify.returncode != 0:
+                log(f"Verification failed: {(verify.stdout or '') + (verify.stderr or '')}"[-800:])
+                return False
+            if "True" not in verify.stdout:
+                log("Warning: extensions imported, but torch reports CUDA as not available.")
+
+            versions = self._load_versions()
+            versions["2dgs"] = "installed"
+            self._save_versions(versions)
+
+            log("2DGS trainer installed successfully!")
+            return True
+
+        except subprocess.TimeoutExpired as e:
+            log(f"2DGS setup timed out during: {e}")
+            return False
+        except Exception as e:
+            log(f"2DGS setup failed: {e}")
+            logger.error(f"2DGS setup error: {e}", exc_info=True)
+            return False
+
     
     def _update_component(self, name: str, download_url: str, folder: str, 
                           version_key: str, latest_version: str, log) -> bool:

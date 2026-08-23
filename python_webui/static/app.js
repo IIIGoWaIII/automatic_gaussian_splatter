@@ -386,13 +386,13 @@ async function checkForUpdates() {
 function showUpdateModal(updates) {
     updateList.innerHTML = '';
 
-    const toolUpdates = updates.filter(u => u.key === 'colmap' || u.key === 'brush' || u.key === 'sharp' || u.key === 'lichtfeld');
+    const toolUpdates = updates.filter(u => ['colmap', 'brush', 'sharp', 'lichtfeld', '2dgs'].includes(u.key));
     const appUpdates = updates.filter(u => u.key === 'app');
 
     if (toolUpdates.length > 0) {
         const toolHeader = document.createElement('div');
         toolHeader.className = 'update-section-header';
-        toolHeader.textContent = 'Tools (COLMAP, Brush, LichtFeld)';
+        toolHeader.textContent = 'Tools (COLMAP, Brush, LichtFeld, ML-Sharp, 2DGS)';
         updateList.appendChild(toolHeader);
 
         toolUpdates.forEach(update => {

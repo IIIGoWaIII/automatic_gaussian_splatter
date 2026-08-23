@@ -30,6 +30,7 @@ If refinement fails for any reason, the pipeline automatically falls back to the
     - **COLMAP** (Windows CUDA binaries)
     - **Brush** (Windows binaries)
     - **ML-Sharp** (Requires Python 3.13)
+    - **2DGS Trainer Setup** (bundled source; requires Python 3.11, MSVC Build Tools and a CUDA Toolkit to compile its extensions)
 
 ---
 
@@ -45,7 +46,9 @@ If refinement fails for any reason, the pipeline automatically falls back to the
 - **Python 3.13**: [Download Python 3.13](https://www.python.org/downloads/release/python-3130/)
     - > [!IMPORTANT]
     - > **Python 3.13 is mandatory** for the ML-Sharp (Single Image 3DGS) component. While the WebUI may start with older versions, the full pipeline requires 3.13.
-- **CUDA Toolkit**: Recommended for optimal performance with COLMAP and Brush.
+- **Python 3.11**: Required for the 2DGS trainer (can coexist with Python 3.13)
+- **MSVC Build Tools**: "Desktop development with C++" workload — needed to compile the 2DGS CUDA extensions
+- **CUDA Toolkit**: Recommended for optimal performance with COLMAP and Brush; **required** to compile the 2DGS extensions.
 
 ---
 
@@ -61,7 +64,7 @@ A high-performance Gaussian Splatting trainer. It features a real-time viewer an
 Incorporates Apple's ML-Sharp model to generate 3D Gaussian Splats from a single image. This requires a significant download (~2GB dependencies + ~500MB model checkpoint) which is handled by the built-in update manager.
 
 ### 4. 2DGS (2D Gaussian Splatting with Normals)
-A Python-based trainer ([hbb1/2d-gaussian-splatting](https://github.com/hbb1/2d-gaussian-splatting)) that represents surfaces as oriented 2D disks, producing geometrically accurate normals — ideal for objects and surface reconstruction. Select **2DGS** in the Trainer dropdown. Requirements (bundled in `2d-gaussian-splatting-main/.venv`):
+A Python-based trainer ([hbb1/2d-gaussian-splatting](https://github.com/hbb1/2d-gaussian-splatting), vendored as a patched fork in `2d-gaussian-splatting-main/`) that represents surfaces as oriented 2D disks, producing geometrically accurate normals — ideal for objects and surface reconstruction. Select **2DGS** in the Trainer dropdown. The source ships with this repository; run **2DGS Trainer Setup** from the Updates section to create `2d-gaussian-splatting-main/.venv` and compile its extensions (requires Python 3.11, MSVC Build Tools and a CUDA toolkit):
 - PyTorch with CUDA + compiled `simple-knn` and `diff-surfel-rasterization` extensions
 - MSVC Build Tools and a CUDA toolkit are needed if the extensions ever need to be rebuilt
 - Training runs at `2d-gaussian-splatting-main/train.py`; checkpoints (`chkpnt*.pth`) are saved every 7000 steps so training can be resumed from the Resume tab
