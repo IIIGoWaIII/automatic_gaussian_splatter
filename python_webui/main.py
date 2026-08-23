@@ -233,6 +233,89 @@ async def upload_dataset(
         logger.error(f"Upload failed: {e}")
         return {"error": str(e)}
 
+@app.post("/upload-lidar")
+async def upload_lidar_zip(
+    file: UploadFile = File(...),
+    projectName: Optional[str] = Form(None),
+    colmapSettings: Optional[str] = Form(None),
+    brushSettings: Optional[str] = Form(None),
+    background_tasks: BackgroundTasks = None
+):
+    """Upload a LiDAR capture ZIP (e.g. SplatKing export) for splat training."""
+    try:
+        if not file.filename or not file.filename.lower().endswith(".zip"):
+            return {"error": "Please upload a .zip LiDAR capture archive."}
+
+        task_id = str(uuid.uuid4())
+        task_dir = UPLOAD_DIR / task_id
+        ensure_directory(task_dir)
+
+        zip_path = task_dir / file.filename
+        with open(zip_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        logger.info(f"LiDAR capture uploaded: {file.filename} -> {zip_path}")
+
+        parsed_colmap = None
+        parsed_brush = None
+        try:
+            if colmapSettings:
+                parsed_colmap = json.loads(colmapSettings)
+        except Exception as e:
+            logger.error(f"Failed to parse colmap settings: {e}")
+        try:
+            if brushSettings:
+                parsed_brush = json.loads(brushSettings)
+        except Exception as e:
+            logger.error(f"Failed to parse brush settings: {e}")
+
+        background_tasks.add_task(
+            start_lidar_pipeline,
+            task_id,
+            zip_path,
+            parsed_colmap,
+            parsed_brush,
+            projectName
+        )
+
+        return {"task_id": task_id, "status": "uploaded", "message": "LiDAR capture processing started"}
+    except Exception as e:
+        logger.error(f"LiDAR upload failed: {e}")
+        return {"error": str(e)}
+
+async def start_lidar_pipeline(task_id: str, zip_path: Path, colmap_settings: Optional[dict], brush_settings: Optional[dict], project_name: Optional[str]):
+    async def log_callback(msg: str):
+        try:
+            await ws_manager.broadcast(json.dumps({
+                "type": "log",
+                "task_id": task_id,
+                "message": msg
+            }))
+        except Exception as e:
+            logger.error(f"Failed to broadcast log: {e}")
+
+    try:
+        await manager.process_lidar_zip(
+            task_id,
+            zip_path,
+            log_callback,
+            colmap_settings,
+            brush_settings,
+            project_name
+        )
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "completed"
+        }))
+    except Exception as e:
+        logger.exception(f"LiDAR pipeline failed for task {task_id}")
+        await ws_manager.broadcast(json.dumps({
+            "type": "status",
+            "task_id": task_id,
+            "status": "failed"
+        }))
+
 @app.get("/settings")
 async def get_settings():
     """Expose default COLMAP and Brush settings to the UI."""

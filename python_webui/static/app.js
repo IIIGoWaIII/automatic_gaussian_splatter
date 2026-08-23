@@ -13,6 +13,45 @@ const uploadCard = document.getElementById('uploadCard');
 const multiWorkflow = document.getElementById('workflow-multiple');
 const singleWorkflow = document.getElementById('workflow-single');
 
+// LiDAR workflow elements
+const lidarWorkflow = document.getElementById('workflow-lidar');
+const lidarZipName = document.getElementById('lidarZipName');
+const lidarProjectName = document.getElementById('lidarProjectName');
+const lidarChangeBtn = document.getElementById('lidarChangeBtn');
+const startLidarBtn = document.getElementById('startLidarBtn');
+const lidarRefinePoses = document.getElementById('lidarRefinePoses');
+const lidarTrainerType = document.getElementById('lidarTrainerType');
+const lidarBrushSteps = document.getElementById('lidarBrushSteps');
+const lidarMaxSplats = document.getElementById('lidarMaxSplats');
+const lidarViewer = document.getElementById('lidarViewer');
+const lidarShutdown = document.getElementById('lidarShutdown');
+const lidarAutoSettingsChips = document.getElementById('lidarAutoSettingsChips');
+
+// LiDAR training presets per scene type
+const LIDAR_SCENARIOS = {
+    object: { label: 'Single Object', steps: 30000, maxSplats: 3000000 },
+    indoor: { label: 'Indoor Room', steps: 50000, maxSplats: 5000000 },
+    outdoor: { label: 'Outdoor Scene', steps: 70000, maxSplats: 8000000 }
+};
+
+function applyLidarScenario(key) {
+    const preset = LIDAR_SCENARIOS[key];
+    if (!preset) return;
+    lidarBrushSteps.value = preset.steps;
+    lidarMaxSplats.value = preset.maxSplats;
+    lidarAutoSettingsChips.innerHTML = `
+        <span class="settings-chip">🏷️ Scene: ${preset.label}</span>
+        <span class="settings-chip">⏱️ Steps: ${preset.steps.toLocaleString()}</span>
+        <span class="settings-chip">🌀 Max splats: ${(preset.maxSplats / 1e6)}M</span>
+    `;
+}
+
+document.querySelectorAll('input[name="lidarScenario"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        if (e.target.checked) applyLidarScenario(e.target.value);
+    });
+});
+
 const statusDiv = document.getElementById('pipelineStatus');
 const consoleWindow = document.getElementById('consoleWindow');
 const consoleOutput = document.getElementById('consoleOutput');
@@ -99,6 +138,7 @@ const steps = {
 // State
 // ==========================================
 let selectedFiles = [];
+let lidarZipFile = null; // selected .zip LiDAR capture
 let videoDuration = 0; // seconds
 let autoExtractionFps = 2; // computed from video duration to hit 300-400 frames
 let pendingUpload = null; // { files, sampled }
@@ -684,7 +724,7 @@ function detectStage(msg) {
     const m = msg.toLowerCase();
     if (m.includes('step 1') || m.includes('extracting frames') || m.includes('organizing') || m.includes('copied')) return 0;
     if (m.includes('step 2') || m.includes('colmap') || m.includes('feature extraction') || m.includes('matching') || m.includes('calibrat') || m.includes('mapper')) return 1;
-    if (m.includes('step 3') || m.includes('brush') || m.includes('lichtfeld') || m.includes('training') || m.includes('resuming') || m.includes('scratch')) return 2;
+    if (m.includes('step 3') || m.includes('brush') || m.includes('lichtfeld') || m.includes('2dgs') || m.includes('training') || m.includes('resuming') || m.includes('scratch')) return 2;
     return -1;
 }
 
@@ -699,7 +739,7 @@ function noteForLog(msg) {
     if (m.includes('calibrat')) return 'Calibrating cameras...';
     if (m.includes('mapper') || m.includes('colmap')) return 'Searching camera placements...';
     if (m.includes('dense')) return 'Building dense reconstruction...';
-    if (m.includes('brush') || m.includes('lichtfeld') || m.includes('resuming') || m.includes('scratch')) return 'Training splats...';
+    if (m.includes('brush') || m.includes('lichtfeld') || m.includes('2dgs') || m.includes('resuming') || m.includes('scratch')) return 'Training splats...';
     return null;
 }
 
@@ -772,7 +812,7 @@ function handleProgressLog(msg) {
         return;
     }
 
-    const stepMatch = msg.match(/(?:step|iteration)\D{0,40}?(\d{1,7})\s*\/\s*(\d{1,7})/i)
+    const stepMatch = msg.match(/(?:step|iteration|progress)\D{0,40}?(\d{1,7})\s*\/\s*(\d{1,7})/i)
         || (/\bstep\b/i.test(msg) && msg.match(/(\d{1,7})\s*\/\s*(\d{1,7})/));
     if (stepMatch && progress.stageIndex === 2) {
         const cur = parseInt(stepMatch[1], 10);
@@ -938,9 +978,16 @@ function handleFileSelection(files) {
     const allFiles = Array.from(files);
     if (allFiles.length === 0) return;
 
-    // Split into images and videos
+    // Split into images, videos and zips
+    const zips = allFiles.filter(f => /\.zip$/i.test(f.name));
     const videos = allFiles.filter(isVideoFile);
     const images = allFiles.filter(isImageFile);
+
+    // Single LiDAR capture zip -> lidar workflow
+    if (zips.length === 1 && videos.length === 0 && images.length === 0) {
+        setupLidarWorkflow(zips[0]);
+        return;
+    }
 
     // Single image -> Sharp workflow
     if (images.length === 1 && videos.length === 0) {
@@ -1115,6 +1162,101 @@ async function startUpload() {
 }
 
 // ==========================================
+// LiDAR capture workflow
+// ==========================================
+function setupLidarWorkflow(zipFile) {
+    multiWorkflow.style.display = 'none';
+    singleWorkflow.style.display = 'none';
+    lidarWorkflow.style.display = 'block';
+    selectedFiles = [];
+    lidarZipFile = zipFile;
+
+    dropZone.style.display = 'none';
+    dropSummary.style.display = 'none';
+
+    lidarZipName.textContent = zipFile.name;
+    if (!lidarProjectName.value) {
+        const base = zipFile.name.replace(/\.zip$/i, '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+        lidarProjectName.value = base.slice(0, 64);
+    }
+
+    applyLidarScenario(document.querySelector('input[name="lidarScenario"]:checked').value);
+}
+
+lidarChangeBtn.addEventListener('click', () => {
+    lidarWorkflow.style.display = 'none';
+    dropZone.style.display = 'block';
+    dropSummary.style.display = 'none';
+    lidarZipFile = null;
+    fileInput.value = '';
+});
+
+startLidarBtn.addEventListener('click', () => {
+    if (!lidarZipFile) {
+        alert('Select a LiDAR capture ZIP first.');
+        return;
+    }
+    startLidarUpload(lidarZipFile);
+});
+
+async function startLidarUpload(zipFile) {
+    lidarWorkflow.style.display = 'none';
+    uploadCard.style.display = 'none';
+    statusDiv.style.display = 'flex';
+    consoleOutput.innerHTML = '';
+
+    // LiDAR pipeline skips COLMAP mapping; estimate only training time.
+    initProgress({ resume: true, startIter: 0, targetSteps: parseInt(lidarBrushSteps.value, 10) || 50000 });
+
+    const formData = new FormData();
+    formData.append('file', zipFile);
+
+    const projectName = lidarProjectName.value.trim();
+    if (projectName) {
+        formData.append('projectName', projectName);
+    }
+
+    const colmapSettings = {
+        refine_poses: lidarRefinePoses.checked
+    };
+    formData.append('colmapSettings', JSON.stringify(colmapSettings));
+
+    const brushSettings = {
+        trainer: lidarTrainerType.value,
+        total_steps: parseInt(lidarBrushSteps.value, 10) || 50000,
+        with_viewer: lidarViewer.checked,
+        shutdown_after_training: lidarShutdown.checked,
+        sh_degree: 3,
+        max_splats: parseInt(lidarMaxSplats.value, 10) || 5000000,
+        max_resolution: 8192
+    };
+    formData.append('brushSettings', JSON.stringify(brushSettings));
+
+    try {
+        const response = await fetch('/upload-lidar', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!response.ok) throw new Error('Upload failed');
+
+        const result = await response.json();
+        console.log('LiDAR task started:', result.task_id);
+    } catch (err) {
+        console.error(err);
+        alert('Error uploading LiDAR capture. Check console.');
+        resetLidarWorkflow();
+    }
+}
+
+function resetLidarWorkflow() {
+    uploadCard.style.display = 'block';
+    dropZone.style.display = 'block';
+    lidarWorkflow.style.display = 'none';
+    lidarZipFile = null;
+}
+
+// ==========================================
 // Single image workflow
 // ==========================================
 function setupSingleWorkflow(file) {
@@ -1222,9 +1364,11 @@ fileInput.addEventListener('change', (e) => {
 changeFilesBtn.addEventListener('click', () => {
     multiWorkflow.style.display = 'none';
     singleWorkflow.style.display = 'none';
+    lidarWorkflow.style.display = 'none';
     dropZone.style.display = 'block';
     dropSummary.style.display = 'none';
     selectedFiles = [];
+    lidarZipFile = null;
     singleImageFile = null;
     fileInput.value = '';
 });

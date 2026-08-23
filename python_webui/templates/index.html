@@ -58,10 +58,10 @@
         <div id="uploadCard" class="glass-card upload-card">
             <div id="dropZone" class="upload-area">
                 <div class="upload-icon">📁</div>
-                <h3>Drop Images or Video here</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 2rem;">1 image = object generation · multiple images / video = full scene</p>
+                <h3>Drop Images, Video or LiDAR ZIP here</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 2rem;">1 image = object generation · multiple images / video = full scene · .zip = LiDAR capture</p>
                 <input type="file" id="fileInput" hidden multiple
-                    accept="image/*,video/mp4,video/quicktime,video/x-msvideo,.mov,.mp4,.avi">
+                    accept="image/*,video/mp4,video/quicktime,video/x-msvideo,.mov,.mp4,.avi,.zip">
                 <button class="btn" onclick="document.getElementById('fileInput').click()">Select Files</button>
             </div>
             <div id="dropSummary" class="drop-summary" style="display: none;">
@@ -184,6 +184,7 @@
                         <select id="trainerType" class="field-control" style="margin-bottom: 1rem;">
                             <option value="brush" selected>Brush (default)</option>
                             <option value="lichtfeld">LichtFeld-Studio</option>
+                            <option value="2dgs">2DGS (2D Gaussian Splatting, with normals)</option>
                         </select>
 
                         <label class="field-label" for="brushSteps">Total training steps</label>
@@ -242,6 +243,102 @@
                     <input type="file" id="singleFileInput" hidden accept="image/*">
                 </div>
             </div>
+        </div>
+
+        <!-- LiDAR Capture Workflow -->
+        <div id="workflow-lidar" class="glass-card" style="display: none;">
+            <div class="section-heading">
+                <h3>🛰️ LiDAR Capture (ZIP)</h3>
+                <p>SplatKing-style capture detected — device-tracked camera poses and LiDAR points are reused,
+                    then refined against the images before training.</p>
+            </div>
+
+            <!-- Scenario Selection -->
+            <div class="section-heading">
+                <h4>What are you capturing?</h4>
+                <p style="margin-bottom: 0;">Tunes training length and splat budget for the scene type.</p>
+            </div>
+            <div class="scenario-grid">
+                <label class="scenario-card">
+                    <input type="radio" name="lidarScenario" value="object">
+                    <span class="scenario-card__icon">🪀</span>
+                    <span class="scenario-card__title">Single Object</span>
+                    <span class="scenario-card__desc">Close-up scan of one item</span>
+                </label>
+                <label class="scenario-card">
+                    <input type="radio" name="lidarScenario" value="indoor" checked>
+                    <span class="scenario-card__icon">🏠</span>
+                    <span class="scenario-card__title">Indoor Room</span>
+                    <span class="scenario-card__desc">A room, apartment or interior</span>
+                </label>
+                <label class="scenario-card">
+                    <input type="radio" name="lidarScenario" value="outdoor">
+                    <span class="scenario-card__icon">🏙️</span>
+                    <span class="scenario-card__title">Outdoor Scene</span>
+                    <span class="scenario-card__desc">Building, street or large area</span>
+                </label>
+            </div>
+
+            <!-- Auto-selected settings summary -->
+            <div id="lidarAutoSettings" class="auto-settings">
+                <h4>Auto-configured settings</h4>
+                <div id="lidarAutoSettingsChips" class="settings-chips"></div>
+                <p class="settings-hint">Camera poses come from your device tracking — only training settings are
+                    configured here. Override them below if you like.</p>
+            </div>
+            <div class="drop-summary" style="display: flex; margin-bottom: 1rem;">
+                <div class="drop-summary__info">
+                    <div class="upload-icon" style="font-size: 2rem; margin-bottom: 0.5rem;">📦</div>
+                    <div id="lidarZipName" style="font-weight: 600;"></div>
+                    <div style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 0.25rem;">LiDAR capture archive</div>
+                </div>
+                <button id="lidarChangeBtn" class="btn btn-cancel">↻ Change File</button>
+            </div>
+
+            <div class="project-row">
+                <label class="field-label" for="lidarProjectName" style="margin-top: 0;">Project Name (optional)</label>
+                <input type="text" id="lidarProjectName" class="field-control" placeholder="e.g., my_lidar_scan"
+                    pattern="[a-zA-Z0-9_\-]+" title="Only letters, numbers, underscores and hyphens allowed">
+            </div>
+
+            <button id="startLidarBtn" class="btn btn-start">🚀 Start Processing</button>
+
+            <details class="settings-card advanced-settings">
+                <summary>
+                    <span>⚙️ Advanced Settings</span>
+                </summary>
+                <div class="settings-card" style="margin-bottom: 0;">
+                    <label class="toggle-row">
+                        <input type="checkbox" id="lidarRefinePoses" checked>
+                        <span>Refine device poses with image matching (recommended, slower)</span>
+                    </label>
+                    <p class="settings-hint">Runs feature extraction, sequential matching and bundle adjustment anchored
+                        to the device tracking. Disable to train directly on the raw device poses.</p>
+
+                    <label class="field-label" for="lidarTrainerType">Trainer</label>
+                    <select id="lidarTrainerType" class="field-control" style="margin-bottom: 1rem;">
+                        <option value="brush" selected>Brush (default)</option>
+                        <option value="lichtfeld">LichtFeld-Studio</option>
+                        <option value="2dgs">2DGS (2D Gaussian Splatting, with normals)</option>
+                    </select>
+
+                    <label class="field-label" for="lidarBrushSteps">Total training steps</label>
+                    <input type="number" id="lidarBrushSteps" class="field-control" value="50000" min="1000" step="1000">
+
+                    <label class="field-label" for="lidarMaxSplats">Max Splat Count</label>
+                    <input type="number" id="lidarMaxSplats" class="field-control" value="5000000" min="100000"
+                        step="100000">
+
+                    <label class="toggle-row">
+                        <input type="checkbox" id="lidarViewer" checked>
+                        <span>Launch viewer while training</span>
+                    </label>
+                    <label class="toggle-row">
+                        <input type="checkbox" id="lidarShutdown">
+                        <span style="color: var(--accent);">Turn off PC when finished</span>
+                    </label>
+                </div>
+            </details>
         </div>
 
         <!-- Library: Resume + Preview (hidden until requested) -->
@@ -339,7 +436,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=7"></script>
 </body>
 
 </html>
